@@ -10,7 +10,7 @@ Public repo (MIT): https://github.com/rangogamedev/codecks-cli
 ## Environment
 - **Python**: `py` (never `python`/`python3`). Requires 3.10+.
 - **Run**: `py codecks_api.py` (no args = help). `--version` for version.
-- **Test**: `pwsh -File scripts/run-tests.ps1` (711 tests, no API calls)
+- **Test**: `pwsh -File scripts/run-tests.ps1` (772 tests, no API calls)
 - **Lint**: `py -m ruff check .` | **Format**: `py -m ruff format --check .`
 - **Type check**: `py scripts/quality_gate.py --mypy-only` (targets in `scripts/quality_gate.py:MYPY_TARGETS`)
 - **CI**: `.github/workflows/test.yml` — ruff, mypy, pytest (matrix: 3.10, 3.12, 3.14)
@@ -80,15 +80,15 @@ codecks_cli/
   planning.py           <- File-based planning tools (init, status, update, measure)
   gdd.py                <- Google OAuth2, GDD fetch/parse/sync
   setup_wizard.py       <- Interactive .env bootstrap
-  mcp_server/            <- MCP server package: 39 tools wrapping CodecksClient (stdio, legacy/envelope modes)
+  mcp_server/            <- MCP server package: 42 tools wrapping CodecksClient (stdio, legacy/envelope modes)
     __init__.py          FastMCP init, register() calls, re-exports
     __main__.py          ``py -m codecks_cli.mcp_server`` entry point
-    _core.py             Client caching, _call dispatcher, response contract, UUID validation
+    _core.py             Client caching, _call dispatcher, response contract, UUID validation, snapshot cache
     _security.py         Injection detection, sanitization, input validation
-    _tools_read.py       10 query/dashboard tools
+    _tools_read.py       10 query/dashboard tools (cache-aware)
     _tools_write.py      12 mutation/hand/scaffolding tools
     _tools_comments.py   5 comment CRUD tools
-    _tools_local.py      12 local tools (PM session, feedback, planning, registry)
+    _tools_local.py      15 local tools (PM session, feedback, planning, registry, cache)
   pm_playbook.md        <- Agent-agnostic PM methodology (read by MCP tool)
 docker/                 <- Wrapper scripts (build, test, quality, cli, mcp, mcp-http, shell, dev, logs, claude)
 Dockerfile              <- Multi-stage build (Python 3.12-slim, dev+mcp+claude deps)
@@ -146,7 +146,7 @@ Due dates (`dueAt`), Dependencies, Time tracking, Runs/Capacity, Guardians, Beas
 
 ## Testing
 - `conftest.py` autouse fixture isolates all `config.*` globals — no real API calls
-- 16 test files mirror source: `test_config.py`, `test_api.py`, `test_cards.py`, `test_commands.py`, `test_formatters.py`, `test_gdd.py`, `test_cli.py`, `test_models.py`, `test_setup_wizard.py`, `test_client.py`, `test_scaffolding.py`, `test_exceptions.py`, `test_mcp_server.py`, `test_planning.py`, `test_lanes.py`, `test_tags.py`
+- 17 test files mirror source: `test_config.py`, `test_api.py`, `test_cards.py`, `test_commands.py`, `test_formatters.py`, `test_gdd.py`, `test_cli.py`, `test_models.py`, `test_setup_wizard.py`, `test_client.py`, `test_scaffolding.py`, `test_exceptions.py`, `test_mcp_server.py`, `test_mcp_cache.py`, `test_planning.py`, `test_lanes.py`, `test_tags.py`
 - Mocks at module boundary (e.g. `codecks_cli.commands.list_cards`, `codecks_cli.client.list_cards`)
 
 ## Known Bugs Fixed (do not reintroduce)
@@ -163,10 +163,27 @@ Due dates (`dueAt`), Dependencies, Time tracking, Runs/Capacity, Guardians, Beas
 ## MCP Server
 - Install: `py -m pip install .[mcp]`
 - Run: `py -m codecks_cli.mcp_server` (stdio transport)
-- 39 tools exposed (27 CodecksClient wrappers + 3 PM session tools + 4 planning tools + 3 feedback tools + 2 registry tools)
+- 42 tools exposed (27 CodecksClient wrappers + 3 PM session tools + 4 planning tools + 3 feedback tools + 2 registry tools + 2 cache tools + 1 CLI cache command)
 - Response mode: `CODECKS_MCP_RESPONSE_MODE=legacy|envelope` (default `legacy`)
   - `legacy`: preserve top-level success shapes, normalize dicts with `ok`/`schema_version`
   - `envelope`: success always returned as `{"ok": true, "schema_version": "1.0", "data": ...}`
+
+### Snapshot Cache (fast reads for AI agents)
+**STARTUP: Call `warm_cache()` first in every session.** This fetches all project data (account, cards, hand, decks, pm_focus, standup) in one batch and caches it in memory + disk (`.pm_cache.json`). Subsequent reads complete in <50ms instead of 1-2s per API call.
+
+- **`warm_cache()`** — Fetches all data (6 API calls), stores in memory + disk. Returns summary with card_count, hand_size, deck_count.
+- **`cache_status()`** — Check cache state without fetching. Returns TTL remaining, counts, expiry status.
+- **TTL**: Default 5 minutes. Set `CODECKS_CACHE_TTL_SECONDS=0` to disable caching.
+- **Cache-aware tools**: `get_account`, `list_cards`, `get_card`, `list_decks`, `pm_focus`, `standup`, `list_hand` all check cache first with automatic API fallback.
+- **Write-through invalidation**: Any mutation (create/update/delete/archive) automatically clears the cache. Next read refetches from API.
+- **Cached responses** include `"cached": true` and `"cache_age_seconds"` metadata so agents know data freshness.
+- **CLI**: `py codecks_api.py cache` pre-populates the disk cache. `--show` to inspect, `--clear` to reset.
+
+**Optimal agent workflow:**
+1. Call `warm_cache()` at session start (one-time ~3s)
+2. All subsequent reads are instant from cache
+3. Mutations auto-invalidate; next read refreshes
+4. Use `include_content=False` / `include_conversations=False` on `get_card` for metadata-only checks
 
 ## CLI Feedback (from the PM Agent)
 

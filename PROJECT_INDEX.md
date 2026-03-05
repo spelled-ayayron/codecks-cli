@@ -45,6 +45,7 @@ Fast index for agents and maintainers.
 - CLI request flow: `cli.py` -> `commands.py` -> `CodecksClient` (`client.py`) -> `cards.py`/`scaffolding.py`/`api.py`
 - Output flow: `commands.py` -> `formatters/*` -> JSON/table/CSV
 - MCP flow: `mcp_server/` -> `_core._call()` -> `CodecksClient` methods -> `_core._finalize_tool_result()` contract shape
+- MCP cache flow: `warm_cache()` -> `_core._warm_cache_impl()` -> disk + memory; reads check `_core._is_cache_valid()` first
 
 ## Change Hotspots
 - Add/modify command:

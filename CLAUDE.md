@@ -7,7 +7,7 @@ Fast navigation map: `PROJECT_INDEX.md`.
 ## Environment
 - **Python**: `py` (never `python`/`python3`). Requires 3.10+.
 - **Run**: `py codecks_api.py` (no args = help). `--version` for version.
-- **Test**: `pwsh -File scripts/run-tests.ps1` (711 tests, no API calls)
+- **Test**: `pwsh -File scripts/run-tests.ps1` (772 tests, no API calls)
 - **Lint**: `py -m ruff check .` | **Format**: `py -m ruff format --check .`
 - **Type check**: `py scripts/quality_gate.py --mypy-only` (targets in `scripts/quality_gate.py:MYPY_TARGETS`)
 - **CI**: `.github/workflows/test.yml` — ruff, mypy, pytest (matrix: 3.10, 3.12, 3.14) + Codecov coverage
@@ -38,7 +38,7 @@ codecks_cli/
   planning.py           <- File-based planning tools
   gdd.py                <- Google OAuth2, GDD sync
   setup_wizard.py       <- Interactive .env bootstrap
-  mcp_server/            <- 39 MCP tools (package: _core, _security, _tools_*)
+  mcp_server/            <- 42 MCP tools (package: _core, _security, _tools_*)
 ```
 
 Use `/architecture` for full details, import graph, and design patterns.
@@ -74,8 +74,9 @@ Quick: `./docker/build.sh` then `./docker/test.sh`, `./docker/quality.sh`, `./do
 
 ## MCP Server
 - Run: `py -m codecks_cli.mcp_server` (stdio). Install: `py -m pip install .[mcp]`
-- 39 tools. Response mode: `CODECKS_MCP_RESPONSE_MODE=legacy|envelope`
+- 42 tools. Response mode: `CODECKS_MCP_RESPONSE_MODE=legacy|envelope`
 - Standalone wrapper repos archived (unnecessary — use `py -m codecks_cli.mcp_server` directly)
+- **Snapshot cache**: Call `warm_cache()` at session start for instant reads (<50ms vs 1-2s). TTL: `CODECKS_CACHE_TTL_SECONDS` (default 300). Mutations auto-invalidate.
 
 ## CLI Feedback
 Read `.cli_feedback.json` at session start — PM agent reports bugs/improvements there.
@@ -99,7 +100,7 @@ Always use Context7 MCP for library/API docs. These IDs are pre-resolved — ski
 | mypy | `/websites/mypy_readthedocs_io_en` |
 
 ## MCP Servers (`.claude/settings.json`)
-- `codecks` — this project's own MCP server (39 tools, Codecks API access)
+- `codecks` — this project's own MCP server (42 tools, Codecks API access)
 - `context7` — live documentation lookup
 - `github` — GitHub issues/PRs integration
 
