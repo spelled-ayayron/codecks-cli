@@ -12,6 +12,7 @@ from codecks_cli.commands import (
     cmd_account,
     cmd_activity,
     cmd_archive,
+    cmd_cache,
     cmd_card,
     cmd_cards,
     cmd_comment,
@@ -471,6 +472,12 @@ def build_parser():
     p.add_argument("--project")
     p.add_argument("--owner")
     p.set_defaults(func=cmd_standup)
+
+    # --- cache ---
+    p = sub.add_parser("cache", help="Prefetch and cache project snapshot for fast startup")
+    p.add_argument("--show", action="store_true", help="Show existing cache without fetching")
+    p.add_argument("--clear", action="store_true", help="Delete the cache file")
+    p.set_defaults(func=cmd_cache)
 
     # --- comment ---
     p = sub.add_parser("comment")

@@ -40,6 +40,7 @@ def load_env():
         "CODECKS_HTTP_LOG",
         "CODECKS_HTTP_LOG_SAMPLE_RATE",
         "CODECKS_MCP_RESPONSE_MODE",
+        "CODECKS_CACHE_TTL_SECONDS",
         "GDD_GOOGLE_DOC_URL",
         "GOOGLE_CLIENT_ID",
         "GOOGLE_CLIENT_SECRET",
@@ -157,6 +158,14 @@ HTTP_LOG_SAMPLE_RATE = min(1.0, max(0.0, _env_float("CODECKS_HTTP_LOG_SAMPLE_RAT
 MCP_RESPONSE_MODE = env.get("CODECKS_MCP_RESPONSE_MODE", "legacy").strip().lower()
 if MCP_RESPONSE_MODE not in {"legacy", "envelope"}:
     MCP_RESPONSE_MODE = "legacy"
+
+# ---------------------------------------------------------------------------
+# Cache file path (project snapshot for fast agent startup)
+# ---------------------------------------------------------------------------
+
+CACHE_FILE = ".pm_cache.json"
+CACHE_PATH = os.path.join(_PROJECT_ROOT, CACHE_FILE)
+CACHE_TTL_SECONDS = _env_int("CODECKS_CACHE_TTL_SECONDS", 300)
 
 # ---------------------------------------------------------------------------
 # GDD-related paths and Google OAuth constants

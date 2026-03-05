@@ -702,15 +702,18 @@ class CodecksClient:
     def prefetch_snapshot(
         self, *, days: int = 2, project: str | None = None, owner: str | None = None
     ) -> dict[str, Any]:
-        """Fetch standup + hand + account in one call for caching.
+        """Fetch comprehensive project snapshot for caching.
 
         Returns:
-            dict with 'account', 'standup', and 'hand' keys.
+            dict with account, cards_result, hand, decks, standup, pm_focus keys.
         """
         return {
             "account": self.get_account(),
-            "standup": self.standup(days=days, project=project, owner=owner),
+            "cards_result": self.list_cards(),
             "hand": self.list_hand(),
+            "decks": self.list_decks(include_card_counts=False),
+            "standup": self.standup(days=days, project=project, owner=owner),
+            "pm_focus": self.pm_focus(),
         }
 
     # -------------------------------------------------------------------

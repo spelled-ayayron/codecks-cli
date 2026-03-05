@@ -28,3 +28,9 @@ def _isolate_config(monkeypatch):
     from codecks_cli import commands
 
     monkeypatch.setattr(commands, "_client_instance", None)
+
+    # Reset MCP snapshot cache and prevent disk cache from loading
+    from codecks_cli.mcp_server import _core
+
+    _core._invalidate_cache()
+    monkeypatch.setattr(_core, "CACHE_PATH", "__test_no_cache__.json")

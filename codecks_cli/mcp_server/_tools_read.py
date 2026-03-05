@@ -1,18 +1,31 @@
-"""Read tools: queries and dashboards (10 tools)."""
+"""Read tools: queries and dashboards (10 tools). Cache-aware."""
 
 from __future__ import annotations
 
 from typing import Literal
 
 from codecks_cli import CliError
+from codecks_cli.mcp_server import _core
 from codecks_cli.mcp_server._core import (
     _call,
     _contract_error,
     _finalize_tool_result,
     _slim_card,
+    _slim_deck,
     _validate_uuid,
 )
 from codecks_cli.mcp_server._security import _sanitize_activity, _sanitize_card
+
+
+def _try_cache(key: str) -> dict | list | None:
+    """Return cached data for *key* if cache is valid, else None."""
+    _core._load_cache_from_disk()
+    if not _core._is_cache_valid():
+        return None
+    snapshot = _core._get_snapshot()
+    if snapshot is None or key not in snapshot:
+        return None
+    return snapshot[key]
 
 
 def get_account() -> dict:
@@ -21,6 +34,11 @@ def get_account() -> dict:
     Returns:
         Dict with name, id, email, organizationId, role.
     """
+    cached = _try_cache("account")
+    if cached is not None and isinstance(cached, dict):
+        result = dict(cached)
+        result.update(_core._get_cache_metadata())
+        return _finalize_tool_result(result)
     return _finalize_tool_result(_call("get_account"))
 
 
@@ -59,6 +77,45 @@ def list_cards(
     Returns:
         Dict with cards (list), stats, total_count, has_more, limit, offset.
     """
+    # Try serving from cache for non-archived, unfiltered queries
+    if not archived:
+        cached = _try_cache("cards_result")
+        if cached is not None and isinstance(cached, dict) and "cards" in cached:
+            all_cards = cached["cards"]
+            # Apply client-side filtering to cached cards
+            filtered = _filter_cached_cards(
+                all_cards,
+                deck=deck,
+                status=status,
+                project=project,
+                search=search,
+                milestone=milestone,
+                tag=tag,
+                owner=owner,
+                priority=priority,
+                card_type=card_type,
+                hero=hero,
+                hand_only=hand_only,
+                stale_days=stale_days,
+                updated_after=updated_after,
+                updated_before=updated_before,
+            )
+            if sort:
+                filtered = _sort_cards(filtered, sort)
+            total = len(filtered)
+            page = filtered[offset : offset + limit]
+            payload = {
+                "cards": [_sanitize_card(_slim_card(c)) for c in page],
+                "stats": cached.get("stats"),
+                "total_count": total,
+                "has_more": offset + limit < total,
+                "limit": limit,
+                "offset": offset,
+            }
+            payload.update(_core._get_cache_metadata())
+            return _finalize_tool_result(payload)
+
+    # Cache miss — original API path
     result = _call(
         "list_cards",
         deck=deck,
@@ -98,6 +155,125 @@ def list_cards(
     return _finalize_tool_result(result)
 
 
+def _filter_cached_cards(
+    cards: list[dict],
+    *,
+    deck: str | None = None,
+    status: str | None = None,
+    project: str | None = None,
+    search: str | None = None,
+    milestone: str | None = None,
+    tag: str | None = None,
+    owner: str | None = None,
+    priority: str | None = None,
+    card_type: str | None = None,
+    hero: str | None = None,
+    hand_only: bool = False,
+    stale_days: int | None = None,
+    updated_after: str | None = None,
+    updated_before: str | None = None,
+) -> list[dict]:
+    """Apply filters to cached card list. Mirrors CodecksClient.list_cards() filtering."""
+    result = list(cards)
+
+    if deck:
+        deck_lower = deck.lower()
+        result = [c for c in result if str(c.get("deck", "")).lower() == deck_lower]
+
+    if status:
+        statuses = {s.strip() for s in status.split(",")}
+        result = [c for c in result if c.get("status") in statuses]
+
+    if project:
+        project_lower = project.lower()
+        result = [c for c in result if str(c.get("project", "")).lower() == project_lower]
+
+    if search:
+        search_lower = search.lower()
+        result = [
+            c
+            for c in result
+            if search_lower in str(c.get("title", "")).lower()
+            or search_lower in str(c.get("content", "")).lower()
+        ]
+
+    if milestone:
+        milestone_lower = milestone.lower()
+        result = [c for c in result if str(c.get("milestone", "")).lower() == milestone_lower]
+
+    if tag:
+        tag_lower = tag.lower()
+        result = [
+            c
+            for c in result
+            if tag_lower in [str(t).lower() for t in (c.get("tags") or c.get("tag_list") or [])]
+        ]
+
+    if owner:
+        if owner.lower() == "none":
+            result = [c for c in result if not c.get("owner")]
+        else:
+            owner_lower = owner.lower()
+            result = [c for c in result if str(c.get("owner", "")).lower() == owner_lower]
+
+    if priority:
+        priorities = {p.strip() for p in priority.split(",")}
+        result = [c for c in result if c.get("priority") in priorities]
+
+    if card_type == "hero":
+        result = [c for c in result if c.get("child_cards") or c.get("childCards")]
+    elif card_type == "doc":
+        result = [c for c in result if c.get("is_doc") or c.get("cardType") == "doc"]
+
+    if hand_only:
+        snapshot = _core._get_snapshot()
+        if snapshot and "hand" in snapshot:
+            hand_ids = {c.get("id") for c in snapshot["hand"] if isinstance(c, dict)}
+            result = [c for c in result if c.get("id") in hand_ids]
+
+    if stale_days is not None:
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+        cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+        result = [
+            c for c in result if (c.get("updated_at") or c.get("updatedAt") or "") < cutoff_str
+        ]
+
+    if updated_after:
+        result = [
+            c for c in result if (c.get("updated_at") or c.get("updatedAt") or "") >= updated_after
+        ]
+
+    if updated_before:
+        result = [
+            c for c in result if (c.get("updated_at") or c.get("updatedAt") or "") <= updated_before
+        ]
+
+    # hero filter: not easily applicable in cache without additional data
+    # Fall through to API for hero filter — but we still apply other filters above
+
+    return result
+
+
+def _sort_cards(cards: list[dict], sort: str) -> list[dict]:
+    """Sort cards by field name. Mirrors CodecksClient sorting."""
+    key_map = {
+        "title": lambda c: str(c.get("title", "")).lower(),
+        "status": lambda c: str(c.get("status", "")),
+        "priority": lambda c: str(c.get("priority", "z")),
+        "effort": lambda c: c.get("effort") or 999,
+        "deck": lambda c: str(c.get("deck", "")).lower(),
+        "owner": lambda c: str(c.get("owner", "")).lower(),
+        "updated": lambda c: str(c.get("updated_at") or c.get("updatedAt") or ""),
+        "created": lambda c: str(c.get("created_at") or c.get("createdAt") or ""),
+    }
+    key_fn = key_map.get(sort)
+    if key_fn:
+        return sorted(cards, key=key_fn)
+    return cards
+
+
 def get_card(
     card_id: str,
     include_content: bool = True,
@@ -118,6 +294,19 @@ def get_card(
         _validate_uuid(card_id)
     except CliError as e:
         return _finalize_tool_result(_contract_error(str(e), "error"))
+
+    # Try cache when conversations not needed and not archived
+    if not archived and not include_conversations:
+        cached = _try_cache("cards_result")
+        if cached is not None and isinstance(cached, dict):
+            for card in cached.get("cards", []):
+                if isinstance(card, dict) and card.get("id") == card_id:
+                    detail = dict(card)
+                    if not include_content:
+                        detail.pop("content", None)
+                    detail.update(_core._get_cache_metadata())
+                    return _finalize_tool_result(_sanitize_card(detail))
+
     result = _call(
         "get_card",
         card_id=card_id,
@@ -132,6 +321,11 @@ def get_card(
 
 def list_decks(include_card_counts: bool = False) -> dict:
     """List all decks. Set include_card_counts=True for per-deck counts (extra API call)."""
+    cached = _try_cache("decks")
+    if cached is not None and isinstance(cached, list):
+        result = {"decks": [_slim_deck(d) for d in cached]}
+        result.update(_core._get_cache_metadata())
+        return _finalize_tool_result(result)
     return _finalize_tool_result(_call("list_decks", include_card_counts=include_card_counts))
 
 
@@ -202,6 +396,21 @@ def pm_focus(
     Returns:
         Dict with counts, blocked, stale, in_review, hand, and suggested lists.
     """
+    # Serve from cache when no project/owner filter
+    if project is None and owner is None:
+        cached = _try_cache("pm_focus")
+        if cached is not None and isinstance(cached, dict) and "counts" in cached:
+            result = dict(cached)
+            # Re-slice to requested limit
+            for key in ("blocked", "in_review", "hand", "stale", "suggested"):
+                if key in result and isinstance(result[key], list):
+                    result[key] = [
+                        _sanitize_card(_slim_card(r)) if isinstance(r, dict) else r
+                        for r in result[key][:limit]
+                    ]
+            result.update(_core._get_cache_metadata())
+            return _finalize_tool_result(result)
+
     result = _call("pm_focus", project=project, owner=owner, limit=limit, stale_days=stale_days)
     if isinstance(result, dict) and "counts" in result:
         result = dict(result)
@@ -224,6 +433,20 @@ def standup(days: int = 2, project: str | None = None, owner: str | None = None)
     Returns:
         Dict with recently_done, in_progress, blocked, and hand lists.
     """
+    # Serve from cache when no project/owner filter
+    if project is None and owner is None:
+        cached = _try_cache("standup")
+        if cached is not None and isinstance(cached, dict):
+            result = dict(cached)
+            for key in ("recently_done", "in_progress", "blocked", "hand"):
+                if key in result and isinstance(result[key], list):
+                    result[key] = [
+                        _sanitize_card(_slim_card(r)) if isinstance(r, dict) else r
+                        for r in result[key]
+                    ]
+            result.update(_core._get_cache_metadata())
+            return _finalize_tool_result(result)
+
     result = _call("standup", days=days, project=project, owner=owner)
     if isinstance(result, dict) and result.get("ok") is not False:
         result = dict(result)

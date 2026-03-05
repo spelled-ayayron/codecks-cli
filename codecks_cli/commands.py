@@ -10,6 +10,7 @@ handle argparse → keyword args, format selection, and formatter dispatch.
 """
 
 import sys
+from datetime import datetime, timezone
 
 from codecks_cli import config
 from codecks_cli.api import _mask_token, _safe_json_parse, dispatch, generate_report_token, query
@@ -397,6 +398,39 @@ def cmd_standup(ns):
     """Show daily standup summary: recently done, in progress, blocked, hand."""
     report = _get_client().standup(days=ns.days, project=ns.project, owner=ns.owner)
     output(report, format_standup_table, ns.format)
+
+
+def cmd_cache(ns):
+    """Prefetch and cache a project snapshot for fast agent startup."""
+    import json as _json
+    import os
+
+    if ns.clear:
+        if os.path.exists(config.CACHE_PATH):
+            os.remove(config.CACHE_PATH)
+        output({"ok": True, "message": "Cache cleared"}, fmt=ns.format)
+        return
+
+    if ns.show:
+        if not os.path.exists(config.CACHE_PATH):
+            output({"ok": False, "message": "No cache file found"}, fmt=ns.format)
+            return
+        with open(config.CACHE_PATH, encoding="utf-8") as f:
+            data = _json.load(f)
+        output(data, format_standup_table, ns.format)
+        return
+
+    # Default: fetch fresh data and write cache file
+    client = _get_client()
+    snapshot = client.prefetch_snapshot()
+    snapshot["fetched_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Atomic write (same pattern as save_env_value)
+    tmp = config.CACHE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json.dump(snapshot, f, ensure_ascii=False)
+    os.replace(tmp, config.CACHE_PATH)
+    output(snapshot, format_standup_table, ns.format)
 
 
 # ---------------------------------------------------------------------------

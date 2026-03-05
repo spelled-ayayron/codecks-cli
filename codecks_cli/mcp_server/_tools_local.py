@@ -1,4 +1,4 @@
-"""Local tools: PM session, feedback, planning, registry (12 tools, no API calls)."""
+"""Local tools: PM session, feedback, planning, registry, cache (15 tools, no API calls)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from codecks_cli import CliError
-from codecks_cli.config import _PROJECT_ROOT
+from codecks_cli.config import _PROJECT_ROOT, CACHE_TTL_SECONDS
 from codecks_cli.mcp_server._core import _contract_error, _finalize_tool_result
 from codecks_cli.mcp_server._security import _tag_user_text, _validate_input, _validate_preferences
 from codecks_cli.planning import (
@@ -424,6 +424,49 @@ def get_lane_registry(
     )
 
 
+def warm_cache() -> dict:
+    """Prefetch project snapshot for fast reads. Call at session start.
+
+    Fetches all cards, hand, account, decks, pm_focus, standup and caches
+    in memory + disk. Subsequent read tools serve from cache (~5ms vs ~1.5s).
+
+    Returns:
+        Dict with card_count, hand_size, deck_count, fetched_at.
+    """
+    from codecks_cli.mcp_server._core import _warm_cache_impl
+
+    try:
+        return _finalize_tool_result(_warm_cache_impl())
+    except Exception as e:
+        return _finalize_tool_result(_contract_error(f"Cache warming failed: {e}", "error"))
+
+
+def cache_status() -> dict:
+    """Check snapshot cache status without fetching. No auth needed.
+
+    Returns:
+        Dict with cached, cache_age_seconds, card_count, hand_size,
+        ttl_seconds, ttl_remaining_seconds, expired.
+    """
+    from codecks_cli.mcp_server import _core
+
+    _core._load_cache_from_disk()
+    meta = _core._get_cache_metadata()
+    if meta.get("cached"):
+        snapshot = _core._get_snapshot()
+        if snapshot:
+            cards_result = snapshot.get("cards_result")
+            meta["card_count"] = len(
+                cards_result.get("cards", []) if isinstance(cards_result, dict) else []
+            )
+            meta["hand_size"] = len(snapshot.get("hand", []))
+        meta["ttl_seconds"] = CACHE_TTL_SECONDS
+        age = meta.get("cache_age_seconds", 0)
+        meta["ttl_remaining_seconds"] = max(0, round(CACHE_TTL_SECONDS - age, 1))
+        meta["expired"] = age >= CACHE_TTL_SECONDS
+    return _finalize_tool_result(meta)
+
+
 def register(mcp):
     """Register all local tools with the FastMCP instance."""
     mcp.tool()(get_pm_playbook)
@@ -439,3 +482,5 @@ def register(mcp):
     mcp.tool()(planning_measure)
     mcp.tool()(get_tag_registry)
     mcp.tool()(get_lane_registry)
+    mcp.tool()(warm_cache)
+    mcp.tool()(cache_status)

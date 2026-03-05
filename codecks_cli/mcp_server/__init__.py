@@ -3,12 +3,12 @@
 Package structure (see .claude/maps/mcp-server.md for tool index):
   __init__.py       — FastMCP init, register() calls, re-exports
   __main__.py       — ``py -m codecks_cli.mcp_server`` entry point
-  _core.py          — Client caching, _call dispatcher, response contract, UUID validation
+  _core.py          — Client caching, _call dispatcher, response contract, UUID validation, snapshot cache
   _security.py      — Injection detection, sanitization, input validation
-  _tools_read.py    — 10 query/dashboard tools
+  _tools_read.py    — 10 query/dashboard tools (cache-aware)
   _tools_write.py   — 12 mutation/hand/scaffolding tools
   _tools_comments.py — 5 comment CRUD tools
-  _tools_local.py   — 13 local tools (PM session, feedback, planning, registry)
+  _tools_local.py   — 15 local tools (PM session, feedback, planning, registry, cache)
 
 Run: py -m codecks_cli.mcp_server
 Requires: py -m pip install .[mcp]
@@ -27,6 +27,8 @@ mcp = FastMCP(
         "All card IDs must be full 36-char UUIDs. "
         "Doc cards: no status/priority/effort. "
         "Rate limit: 40 req/5s.\n"
+        "STARTUP: Call warm_cache() first in every session for fast reads. "
+        "Cached reads include 'cached: true' and 'cache_age_seconds' in responses.\n"
         "Efficiency: use include_content=False / include_conversations=False on "
         "get_card for metadata-only checks. Prefer pm_focus or standup over "
         "assembling dashboards from raw card lists.\n"
@@ -45,16 +47,26 @@ for _mod in [_tools_read, _tools_write, _tools_comments, _tools_local]:
 
 # _core
 from codecks_cli.mcp_server._core import (  # noqa: E402, F401
+    _MUTATION_METHODS,
     MCP_RESPONSE_MODE,
     _call,
     _client,
     _contract_error,
     _ensure_contract_dict,
     _finalize_tool_result,
+    _get_cache_metadata,
     _get_client,
+    _get_snapshot,
+    _invalidate_cache,
+    _is_cache_valid,
+    _load_cache_from_disk,
     _slim_card,
+    _slim_card_list,
+    _slim_deck,
+    _snapshot_cache,
     _validate_uuid,
     _validate_uuid_list,
+    _warm_cache_impl,
 )
 
 # _security
@@ -85,6 +97,7 @@ from codecks_cli.mcp_server._tools_local import (  # noqa: E402, F401
     _PLANNING_DIR,
     _PLAYBOOK_PATH,
     _PREFS_PATH,
+    cache_status,
     clear_cli_feedback,
     clear_workflow_preferences,
     get_cli_feedback,
@@ -98,6 +111,7 @@ from codecks_cli.mcp_server._tools_local import (  # noqa: E402, F401
     planning_update,
     save_cli_feedback,
     save_workflow_preferences,
+    warm_cache,
 )
 
 # _tools_read

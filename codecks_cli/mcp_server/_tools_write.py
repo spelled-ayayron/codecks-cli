@@ -301,6 +301,15 @@ def list_hand() -> dict:
     Returns:
         List of card dicts with id, title, status, priority, effort, deck_name.
     """
+    # Try cache first
+    from codecks_cli.mcp_server import _core
+
+    _core._load_cache_from_disk()
+    if _core._is_cache_valid():
+        snapshot = _core._get_snapshot()
+        if snapshot is not None and "hand" in snapshot and isinstance(snapshot["hand"], list):
+            return _finalize_tool_result([_sanitize_card(_slim_card(c)) for c in snapshot["hand"]])
+
     result = _call("list_hand")
     if isinstance(result, list):
         return _finalize_tool_result([_sanitize_card(_slim_card(c)) for c in result])
