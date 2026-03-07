@@ -34,6 +34,7 @@ class FeatureSpec:
     lane_auto_skips: dict[str, bool]
     description: str | None
     owner: str | None
+    lane_owners: dict[str, str | None]
     priority: str | None
     effort: int | None
     format: str
@@ -127,6 +128,13 @@ class FeatureSpec:
 
         lane_decks, lane_skips, lane_auto_skips = cls._resolve_lane_args(lane_args)
 
+        lane_owners: dict[str, str | None] = {}
+        for lane_def in LANES:
+            name = lane_def.name
+            lane_owner = getattr(ns, f"{name}_owner", None)
+            if lane_owner:
+                lane_owners[name] = lane_owner
+
         return cls(
             title=title,
             hero_deck=ns.hero_deck,
@@ -135,6 +143,7 @@ class FeatureSpec:
             lane_auto_skips=lane_auto_skips,
             description=ns.description,
             owner=ns.owner,
+            lane_owners=lane_owners,
             priority=ns.priority,
             effort=ns.effort,
             format=ns.format,
@@ -155,6 +164,10 @@ class FeatureSpec:
         skip_audio=False,
         description=None,
         owner=None,
+        code_owner=None,
+        design_owner=None,
+        art_owner=None,
+        audio_owner=None,
         priority=None,
         effort=None,
         format="json",
@@ -184,6 +197,14 @@ class FeatureSpec:
 
         lane_decks, lane_skips, lane_auto_skips = cls._resolve_lane_args(lane_args)
 
+        owner_kwargs = {
+            "code": code_owner,
+            "design": design_owner,
+            "art": art_owner,
+            "audio": audio_owner,
+        }
+        lane_owners = {k: v for k, v in owner_kwargs.items() if v is not None}
+
         return cls(
             title=title,
             hero_deck=hero_deck,
@@ -192,6 +213,7 @@ class FeatureSpec:
             lane_auto_skips=lane_auto_skips,
             description=description,
             owner=owner,
+            lane_owners=lane_owners,
             priority=priority,
             effort=effort,
             format=format,

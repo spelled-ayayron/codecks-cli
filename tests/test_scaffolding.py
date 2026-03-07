@@ -164,6 +164,140 @@ class TestScaffoldFeature:
                 design_deck="Design",
             )
 
+    @patch("codecks_cli.scaffolding.load_users")
+    @patch("codecks_cli.scaffolding.list_cards")
+    @patch("codecks_cli.scaffolding.update_card")
+    @patch("codecks_cli.scaffolding.create_card")
+    @patch("codecks_cli.scaffolding.resolve_deck_id")
+    def test_per_lane_owners(self, mock_resolve, mock_create, mock_update, mock_list, mock_users):
+        """Per-lane owners override global owner for sub-cards."""
+        mock_list.return_value = {"card": {}}
+        mock_users.return_value = {"u1": "Thomas", "u2": "Caroline"}
+        mock_resolve.side_effect = ["d-hero", "d-code", "d-design"]
+        mock_create.side_effect = [
+            {"cardId": "hero-1"},
+            {"cardId": "code-1"},
+            {"cardId": "design-1"},
+        ]
+        mock_update.return_value = {}
+        client = _client()
+        result = client.scaffold_feature(
+            "Test Feature",
+            hero_deck="Features",
+            code_deck="Code",
+            design_deck="Design",
+            code_owner="Thomas",
+            design_owner="Caroline",
+        )
+        assert result["ok"] is True
+        # Hero update (call 0): no assigneeId (no global owner)
+        hero_call = mock_update.call_args_list[0]
+        assert "assigneeId" not in hero_call.kwargs
+        # Code sub-card (call 1): Thomas (u1)
+        code_call = mock_update.call_args_list[1]
+        assert code_call.kwargs["assigneeId"] == "u1"
+        # Design sub-card (call 2): Caroline (u2)
+        design_call = mock_update.call_args_list[2]
+        assert design_call.kwargs["assigneeId"] == "u2"
+
+    @patch("codecks_cli.scaffolding.load_users")
+    @patch("codecks_cli.scaffolding.list_cards")
+    @patch("codecks_cli.scaffolding.update_card")
+    @patch("codecks_cli.scaffolding.create_card")
+    @patch("codecks_cli.scaffolding.resolve_deck_id")
+    def test_global_owner_fallback(
+        self, mock_resolve, mock_create, mock_update, mock_list, mock_users
+    ):
+        """Global owner used when no lane-specific owner is set."""
+        mock_list.return_value = {"card": {}}
+        mock_users.return_value = {"u1": "Thomas"}
+        mock_resolve.side_effect = ["d-hero", "d-code", "d-design"]
+        mock_create.side_effect = [
+            {"cardId": "hero-1"},
+            {"cardId": "code-1"},
+            {"cardId": "design-1"},
+        ]
+        mock_update.return_value = {}
+        client = _client()
+        result = client.scaffold_feature(
+            "Test Feature",
+            hero_deck="Features",
+            code_deck="Code",
+            design_deck="Design",
+            owner="Thomas",
+        )
+        assert result["ok"] is True
+        # All 3 update calls should have Thomas (u1) as assignee
+        for call in mock_update.call_args_list:
+            assert call.kwargs["assigneeId"] == "u1"
+
+    @patch("codecks_cli.scaffolding.load_users")
+    @patch("codecks_cli.scaffolding.list_cards")
+    @patch("codecks_cli.scaffolding.update_card")
+    @patch("codecks_cli.scaffolding.create_card")
+    @patch("codecks_cli.scaffolding.resolve_deck_id")
+    def test_lane_owner_overrides_global(
+        self, mock_resolve, mock_create, mock_update, mock_list, mock_users
+    ):
+        """Lane-specific owner overrides global owner for that lane."""
+        mock_list.return_value = {"card": {}}
+        mock_users.return_value = {"u1": "Thomas", "u2": "Caroline"}
+        mock_resolve.side_effect = ["d-hero", "d-code", "d-design"]
+        mock_create.side_effect = [
+            {"cardId": "hero-1"},
+            {"cardId": "code-1"},
+            {"cardId": "design-1"},
+        ]
+        mock_update.return_value = {}
+        client = _client()
+        result = client.scaffold_feature(
+            "Test Feature",
+            hero_deck="Features",
+            code_deck="Code",
+            design_deck="Design",
+            owner="Thomas",
+            design_owner="Caroline",
+        )
+        assert result["ok"] is True
+        # Hero (call 0): Thomas (global owner)
+        assert mock_update.call_args_list[0].kwargs["assigneeId"] == "u1"
+        # Code (call 1): Thomas (global fallback)
+        assert mock_update.call_args_list[1].kwargs["assigneeId"] == "u1"
+        # Design (call 2): Caroline (lane override)
+        assert mock_update.call_args_list[2].kwargs["assigneeId"] == "u2"
+
+    @patch("codecks_cli.scaffolding.load_users")
+    @patch("codecks_cli.scaffolding.list_cards")
+    @patch("codecks_cli.scaffolding.update_card")
+    @patch("codecks_cli.scaffolding.create_card")
+    @patch("codecks_cli.scaffolding.resolve_deck_id")
+    def test_skipped_lane_owner_ignored(
+        self, mock_resolve, mock_create, mock_update, mock_list, mock_users
+    ):
+        """Owner for a skipped lane is not resolved."""
+        mock_list.return_value = {"card": {}}
+        # Only Thomas exists — Caroline does NOT exist
+        mock_users.return_value = {"u1": "Thomas"}
+        mock_resolve.side_effect = ["d-hero", "d-code", "d-design"]
+        mock_create.side_effect = [
+            {"cardId": "hero-1"},
+            {"cardId": "code-1"},
+            {"cardId": "design-1"},
+        ]
+        mock_update.return_value = {}
+        client = _client()
+        # art_owner="Caroline" should be ignored because art is skipped
+        result = client.scaffold_feature(
+            "Test Feature",
+            hero_deck="Features",
+            code_deck="Code",
+            design_deck="Design",
+            skip_art=True,
+            art_owner="Caroline",
+        )
+        assert result["ok"] is True
+        # Should succeed — Caroline not resolved because art lane is skipped
+
 
 # ---------------------------------------------------------------------------
 # Content analysis helpers

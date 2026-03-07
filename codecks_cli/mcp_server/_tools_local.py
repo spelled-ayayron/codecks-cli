@@ -37,16 +37,34 @@ def get_pm_playbook() -> dict:
         return _finalize_tool_result(_contract_error(f"Cannot read playbook: {e}", "error"))
 
 
-def get_workflow_preferences() -> dict:
-    """Load user workflow preferences from past sessions. No auth needed."""
+def get_workflow_preferences(agent_name: str | None = None) -> dict:
+    """Load user workflow preferences from past sessions. No auth needed.
+
+    Args:
+        agent_name: If set, returns agent-specific prefs merged with global.
+            If None, returns only global observations (backward compat).
+    """
     try:
         with open(_PREFS_PATH, encoding="utf-8") as f:
             data = json.load(f)
         raw_prefs = data.get("observations", [])
+        tagged = [_tag_user_text(p) if isinstance(p, str) else p for p in raw_prefs]
+
+        if agent_name:
+            agent_prefs = data.get("agent_prefs", {}).get(agent_name, [])
+            tagged_agent = [_tag_user_text(p) if isinstance(p, str) else p for p in agent_prefs]
+            return _finalize_tool_result(
+                {
+                    "found": True,
+                    "agent_name": agent_name,
+                    "agent_preferences": tagged_agent,
+                    "global_preferences": tagged,
+                }
+            )
         return _finalize_tool_result(
             {
                 "found": True,
-                "preferences": [_tag_user_text(p) if isinstance(p, str) else p for p in raw_prefs],
+                "preferences": tagged,
             }
         )
     except FileNotFoundError:
@@ -55,26 +73,49 @@ def get_workflow_preferences() -> dict:
         return _finalize_tool_result(_contract_error(f"Cannot read preferences: {e}", "error"))
 
 
-def save_workflow_preferences(observations: list[str]) -> dict:
-    """Save observed workflow patterns from current session. No auth needed."""
+def save_workflow_preferences(observations: list[str], agent_name: str | None = None) -> dict:
+    """Save observed workflow patterns from current session. No auth needed.
+
+    Args:
+        observations: List of observation strings.
+        agent_name: If set, saves to agent-specific prefs (alongside global).
+            If None, saves to global observations (backward compat).
+    """
     try:
         observations = _validate_preferences(observations)
     except CliError as e:
         return _finalize_tool_result(_contract_error(str(e), "error"))
-    data = {
-        "observations": observations,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
+
+    # Load existing data to preserve other sections
+    existing: dict = {}
+    try:
+        with open(_PREFS_PATH, encoding="utf-8") as f:
+            existing = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+    if agent_name:
+        # Agent-scoped: update only this agent's prefs, keep global intact
+        agent_prefs = existing.get("agent_prefs", {})
+        agent_prefs[agent_name] = observations
+        existing["agent_prefs"] = agent_prefs
+    else:
+        # Global: replace observations, keep agent_prefs intact
+        existing["observations"] = observations
+
+    existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+
     try:
         fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(_PREFS_PATH), suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+                json.dump(existing, f, indent=2)
             os.replace(tmp_path, _PREFS_PATH)
         except BaseException:
             os.unlink(tmp_path)
             raise
-        return _finalize_tool_result({"saved": len(observations)})
+        scope = f"agent:{agent_name}" if agent_name else "global"
+        return _finalize_tool_result({"saved": len(observations), "scope": scope})
     except OSError as e:
         return _finalize_tool_result(_contract_error(f"Cannot save preferences: {e}", "error"))
 
@@ -299,6 +340,7 @@ def planning_update(
     expected: str | None = None,
     actual: str | None = None,
     result: str | None = None,
+    agent_name: str | None = None,
 ) -> dict:
     """Update planning files mechanically (saves tokens vs reading/writing).
 
@@ -313,7 +355,14 @@ def planning_update(
         log:          text (action taken)
         file_changed: text (file path)
         test:         test_name, expected, actual, result (pass/fail)
+
+    Optional:
+        agent_name: If set, prefixes log/error entries with [agent_name].
     """
+    # Prefix text with agent name for log/error operations
+    if agent_name and text and operation in ("log", "error", "file_changed"):
+        text = f"[{agent_name}] {text}"
+
     return _finalize_tool_result(
         update_planning(
             _PLANNING_DIR,
@@ -424,18 +473,34 @@ def get_lane_registry(
     )
 
 
-def warm_cache() -> dict:
+def warm_cache(force: bool = False) -> dict:
     """Prefetch project snapshot for fast reads. Call at session start.
 
     Fetches all cards, hand, account, decks, pm_focus, standup and caches
     in memory + disk. Subsequent read tools serve from cache (~5ms vs ~1.5s).
 
+    Skips if cache is already valid (unless force=True). In a team, only
+    the lead agent needs to call this — other agents benefit automatically.
+
+    Args:
+        force: Always re-fetch even if cache is valid (default: False).
+
     Returns:
         Dict with card_count, hand_size, deck_count, fetched_at.
+        If skipped: {ok, skipped, message, cache_age_seconds, ...}.
     """
-    from codecks_cli.mcp_server._core import _warm_cache_impl
+    from codecks_cli.mcp_server._core import (
+        _get_cache_metadata,
+        _is_cache_valid,
+        _warm_cache_impl,
+    )
 
     try:
+        if not force and _is_cache_valid():
+            meta = _get_cache_metadata()
+            return _finalize_tool_result(
+                {"ok": True, "skipped": True, "message": "Cache already valid", **meta}
+            )
         return _finalize_tool_result(_warm_cache_impl())
     except Exception as e:
         return _finalize_tool_result(_contract_error(f"Cache warming failed: {e}", "error"))

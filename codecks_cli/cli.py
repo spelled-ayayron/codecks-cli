@@ -387,6 +387,12 @@ def build_parser():
             )
     p.add_argument("--description")
     p.add_argument("--owner")
+    for lane_def in LANES:
+        p.add_argument(
+            f"--{lane_def.name}-owner",
+            dest=f"{lane_def.name}_owner",
+            help=f"Owner for {lane_def.display_name} sub-card (overrides --owner)",
+        )
     p.add_argument("--priority", choices=sorted(config.VALID_PRIORITIES))
     p.add_argument("--effort", type=_positive_int)
     p.add_argument("--allow-duplicate", action="store_true", dest="allow_duplicate")

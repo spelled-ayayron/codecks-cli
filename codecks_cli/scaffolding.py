@@ -225,6 +225,10 @@ def scaffold_feature(
     skip_audio: bool = False,
     description: str | None = None,
     owner: str | None = None,
+    code_owner: str | None = None,
+    design_owner: str | None = None,
+    art_owner: str | None = None,
+    audio_owner: str | None = None,
     priority: str | None = None,
     effort: int | None = None,
     allow_duplicate: bool = False,
@@ -233,6 +237,9 @@ def scaffold_feature(
 
     Creates a Hero card plus Code, Design, and optionally Art/Audio sub-cards.
     Transaction-safe: archives created cards on partial failure.
+
+    Per-lane owners (code_owner, design_owner, etc.) override the global
+    ``owner`` for their respective sub-cards. The hero card uses ``owner``.
     """
     spec = FeatureSpec.from_kwargs(
         title,
@@ -245,6 +252,10 @@ def scaffold_feature(
         skip_audio=skip_audio,
         description=description,
         owner=owner,
+        code_owner=code_owner,
+        design_owner=design_owner,
+        art_owner=art_owner,
+        audio_owner=audio_owner,
         priority=priority,
         effort=effort,
         allow_duplicate=allow_duplicate,
@@ -265,15 +276,24 @@ def scaffold_feature(
         deck_val = spec.lane_decks.get(lane_def.name)
         lane_deck_ids[lane_def.name] = resolve_deck_id(deck_val) if deck_val else None
 
-    owner_id = _resolve_owner_id(spec.owner) if spec.owner else None
+    hero_owner_id = _resolve_owner_id(spec.owner) if spec.owner else None
     pri = None if spec.priority == "null" else spec.priority
-    common_update: dict[str, Any] = {}
-    if owner_id:
-        common_update["assigneeId"] = owner_id
+
+    # Resolve per-lane owners (fall back to global owner)
+    lane_owner_ids: dict[str, str | None] = {}
+    for lane_def in LANES:
+        lane_owner = spec.lane_owners.get(lane_def.name) or spec.owner
+        skip = spec.lane_skips.get(lane_def.name, False)
+        if lane_owner and not skip:
+            lane_owner_ids[lane_def.name] = _resolve_owner_id(lane_owner)
+
+    hero_update: dict[str, Any] = {}
+    if hero_owner_id:
+        hero_update["assigneeId"] = hero_owner_id
     if pri is not None:
-        common_update["priority"] = pri
+        hero_update["priority"] = pri
     if spec.effort is not None:
-        common_update["effort"] = spec.effort
+        hero_update["effort"] = spec.effort
 
     lane_coverage = "/".join(lane_def.display_name for lane_def in LANES)
     hero_body = (
@@ -291,7 +311,7 @@ def scaffold_feature(
         if not hero_id:
             raise CliError("[ERROR] Hero creation failed: missing cardId.")
         created_ids.append(hero_id)
-        update_card(hero_id, deckId=hero_deck_id, masterTags=list(HERO_TAGS), **common_update)
+        update_card(hero_id, deckId=hero_deck_id, masterTags=list(HERO_TAGS), **hero_update)
 
         def _make_sub(lane_def_inner, deck_id):
             sub_title = f"[{lane_def_inner.display_name}] {spec.title}"
@@ -309,12 +329,20 @@ def scaffold_feature(
                     "missing cardId."
                 )
             created_ids.append(sub_id)
+            sub_update: dict[str, Any] = {}
+            lane_oid = lane_owner_ids.get(lane_def_inner.name)
+            if lane_oid:
+                sub_update["assigneeId"] = lane_oid
+            if pri is not None:
+                sub_update["priority"] = pri
+            if spec.effort is not None:
+                sub_update["effort"] = spec.effort
             update_card(
                 sub_id,
                 parentCardId=hero_id,
                 deckId=deck_id,
                 masterTags=list(lane_def_inner.tags),
-                **common_update,
+                **sub_update,
             )
             created.append(FeatureSubcard(lane=lane_def_inner.name, id=sub_id))
 

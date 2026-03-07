@@ -111,7 +111,7 @@ These are non-negotiable:
 - **Full UUIDs only** — all mutation tools require 36-character UUIDs. Short IDs return 400 errors.
 - **Never set `dueAt`** — due dates are a paid-only feature. The `stale_days`, `updated_after`, and `updated_before` filters only read existing timestamps.
 - **Doc card limitations** — doc cards cannot have `status`, `priority`, or `effort`. Only set owner, tags, milestone, deck, title, content, or hero.
-- **Content replaces fully** — `content` in `update_cards` replaces the entire card body. Keep the title as the first line.
+- **Content replaces fully** — `content` in `update_cards` replaces the card body but auto-preserves the existing title (first line). If both `title` and `content` are provided, they merge automatically.
 - **Never close a Hero** before checking that all sub-cards across Code/Art/Design are done.
 - **Never mutate from a stale list** — refresh the card selection before applying changes.
 - **Duplicate protection** — `create_card` and `scaffold_feature` check for duplicate titles. Use `allow_duplicate=True` to bypass when intentional.
@@ -172,3 +172,47 @@ When reporting results to the user:
 - **What changed**: explicit card IDs + new status/priority/owner
 - **What was verified**: which cards were re-read for confirmation
 - **What is blocked**: token/setup/API/data issues needing user input
+
+## Agent Team Coordination
+
+Multi-agent workflows where a lead agent coordinates worker agents.
+Use `get_team_playbook()` for this section only (saves tokens).
+
+### Session Startup (Lead Agent)
+
+1. Call `warm_cache()` — only the lead does this (workers skip it automatically)
+2. Call `partition_by_lane()` or `partition_by_owner()` to see work distribution
+3. Assign card batches to worker agents (via Claude Code SendMessage with card UUIDs)
+4. Call `team_dashboard()` periodically to monitor overall health + agent workload
+
+### Worker Agent Protocol
+
+1. Receive card assignment from lead (list of UUIDs + context)
+2. Call `claim_card(card_id, agent_name)` before starting on any card
+3. Do your work (`update_cards`, `mark_started`, `create_comment`, etc.)
+4. Call `release_card(card_id, agent_name, summary="what you did")` when done
+5. If unsure what's available, call `team_status()` to see all claims
+
+### Conflict Resolution
+
+- `claim_card` returns `{ok: false, conflict_agent: "other-agent"}` if already claimed
+- Pick a different card — do not retry the same one
+- If handoff is needed: lead calls `delegate_card(card_id, from_agent, to_agent)`
+
+### Monitoring (Lead Agent)
+
+| Goal | Tool |
+|------|------|
+| Full health + workload | `team_dashboard()` |
+| Who's doing what | `team_status()` |
+| Work by lane | `partition_by_lane()` |
+| Work by owner | `partition_by_owner()` |
+| Dropped work | Check `unclaimed_in_progress` in `team_dashboard()` |
+
+### Parallel Independent Pattern
+
+When agents work independently without a lead:
+1. Each agent calls `warm_cache()` (skips if already cached)
+2. Each agent claims cards before working on them
+3. Use `team_status()` to avoid conflicts
+4. No delegation needed — agents self-coordinate via claims
