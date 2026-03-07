@@ -644,3 +644,27 @@ class TestStaleWarning:
         meta = _core._get_cache_metadata()
         assert meta["cached"] is False
         assert "stale_warning" not in meta
+
+
+# ---------------------------------------------------------------------------
+# Cache invalidation map completeness audit
+# ---------------------------------------------------------------------------
+
+
+class TestCacheInvalidationMapCompleteness:
+    def test_all_mutation_methods_in_invalidation_map(self):
+        """Every method in _MUTATION_METHODS must have an entry in _CACHE_INVALIDATION_MAP."""
+        missing = _core._MUTATION_METHODS - set(_core._CACHE_INVALIDATION_MAP.keys())
+        assert missing == set(), (
+            f"Mutation methods missing from _CACHE_INVALIDATION_MAP: {missing}. "
+            f"Add entries (even empty lists) for each new mutation method."
+        )
+
+    def test_invalidation_map_has_no_stale_entries(self):
+        """Every key in _CACHE_INVALIDATION_MAP must be in _MUTATION_METHODS or _ALLOWED_METHODS."""
+        known = _core._MUTATION_METHODS | _core._ALLOWED_METHODS
+        stale = set(_core._CACHE_INVALIDATION_MAP.keys()) - known
+        assert stale == set(), (
+            f"_CACHE_INVALIDATION_MAP has entries for unknown methods: {stale}. "
+            f"Remove stale entries or add methods to _ALLOWED_METHODS/_MUTATION_METHODS."
+        )

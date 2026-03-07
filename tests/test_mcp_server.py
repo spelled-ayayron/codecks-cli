@@ -1965,3 +1965,33 @@ class TestErrorContract:
         assert result["ok"] is False
         assert result["retryable"] is False
         assert result["error_code"] == "CLI_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# update_card_body tool
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCardBody:
+    @patch("codecks_cli.mcp_server._core.CodecksClient")
+    def test_replaces_body_preserves_title(self, MockClient):
+        client = _mock_client(
+            get_card={"id": _C1, "title": "Keep Title", "content": "Keep Title\nOld body"},
+            update_cards={"ok": True, "updated": 1, "per_card": [{"card_id": _C1, "ok": True}]},
+        )
+        MockClient.return_value = client
+        result = mcp_mod.update_card_body(card_id=_C1, body="New body text")
+        # Verify update_cards was called with preserved title + new body
+        client.update_cards.assert_called_once()
+        call_args = client.update_cards.call_args
+        content_sent = (
+            call_args[1].get("content") or call_args[0][1]
+            if len(call_args[0]) > 1
+            else call_args[1].get("content", "")
+        )
+        assert "Keep Title" in content_sent
+        assert "New body text" in content_sent
+
+    def test_invalid_uuid(self):
+        result = mcp_mod.update_card_body(card_id=_BAD, body="New body")
+        assert result["ok"] is False

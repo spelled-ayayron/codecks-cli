@@ -87,7 +87,11 @@ def update_cards(
     Args:
         card_ids: Full 36-char UUIDs (short IDs cause 400 errors).
         effort: Integer string, or 'null' to clear.
-        title/content: Single card only.
+        title/content: Single card only. Content is full card text (title + body).
+            If content already starts with the existing title, it is sent as-is;
+            otherwise the existing title is preserved as first line (CLI backward
+            compat). Use update_card_body() for body-only edits.
+            If both title and content are set, they merge.
         milestone: Name, or 'none' to clear.
         hero: Parent card UUID, or 'none' to detach.
         owner: Name, or 'none' to unassign.
@@ -216,6 +220,10 @@ def scaffold_feature(
     skip_audio: bool = False,
     description: str | None = None,
     owner: str | None = None,
+    code_owner: str | None = None,
+    design_owner: str | None = None,
+    art_owner: str | None = None,
+    audio_owner: str | None = None,
     priority: Literal["a", "b", "c", "null"] | None = None,
     effort: int | None = None,
     allow_duplicate: bool = False,
@@ -225,6 +233,11 @@ def scaffold_feature(
     Args:
         art_deck: Required unless skip_art=True.
         audio_deck: Required unless skip_audio=True.
+        owner: Default owner for hero and all sub-cards.
+        code_owner: Override owner for Code sub-card (falls back to owner).
+        design_owner: Override owner for Design sub-card (falls back to owner).
+        art_owner: Override owner for Art sub-card (falls back to owner).
+        audio_owner: Override owner for Audio sub-card (falls back to owner).
     """
     try:
         title = _validate_input(title, "title")
@@ -245,6 +258,10 @@ def scaffold_feature(
             skip_audio=skip_audio,
             description=description,
             owner=owner,
+            code_owner=code_owner,
+            design_owner=design_owner,
+            art_owner=art_owner,
+            audio_owner=audio_owner,
             priority=priority,
             effort=effort,
             allow_duplicate=allow_duplicate,
@@ -334,6 +351,40 @@ def remove_from_hand(card_ids: list[str]) -> dict:
     return _finalize_tool_result(_call("remove_from_hand", card_ids=card_ids))
 
 
+def update_card_body(card_id: str, body: str) -> dict:
+    """Update only the body/description of a card, preserving its title.
+
+    Use this when you want to change the card description without touching
+    the title. For full content replacement, use update_cards with content=.
+
+    Args:
+        card_id: Full 36-char UUID.
+        body: New body text (replaces everything after the title line).
+
+    Returns:
+        Dict with ok and update result.
+    """
+    try:
+        _validate_uuid(card_id)
+        body = _validate_input(body, "content")
+    except CliError as e:
+        return _finalize_tool_result(_contract_error(str(e), "error"))
+
+    from codecks_cli._content import replace_body
+
+    # Read existing card to get current content
+    card_result = _call("get_card", card_id=card_id)
+    if isinstance(card_result, dict) and card_result.get("ok") is False:
+        return _finalize_tool_result(card_result)
+
+    old_content = ""
+    if isinstance(card_result, dict):
+        old_content = card_result.get("content") or ""
+
+    new_content = replace_body(old_content, body)
+    return _finalize_tool_result(_call("update_cards", card_ids=[card_id], content=new_content))
+
+
 def register(mcp):
     """Register all write tools with the FastMCP instance."""
     mcp.tool()(create_card)
@@ -348,3 +399,4 @@ def register(mcp):
     mcp.tool()(list_hand)
     mcp.tool()(add_to_hand)
     mcp.tool()(remove_from_hand)
+    mcp.tool()(update_card_body)
