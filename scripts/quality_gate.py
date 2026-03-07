@@ -35,6 +35,7 @@ MYPY_TARGETS = [
     "codecks_cli/lanes.py",
     "codecks_cli/tags.py",
     "codecks_cli/scaffolding.py",
+    "codecks_cli/_content.py",
 ]
 
 
