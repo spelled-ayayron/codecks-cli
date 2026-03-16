@@ -470,3 +470,75 @@ class TestCliErrorOutput:
         _emit_cli_error(CliError("[ERROR] bad input"), "table")
         err = capsys.readouterr().err.strip()
         assert err == "[ERROR] bad input"
+
+    def test_emit_json_error_with_recovery_hint(self, capsys):
+        _emit_cli_error(
+            CliError("[ERROR] Card not found", recovery_hint="Run 'cards --search' to find it"),
+            "json",
+        )
+        err = capsys.readouterr().err.strip()
+        payload = json.loads(err)
+        assert payload["ok"] is False
+        assert payload["error"]["recovery"] == "Run 'cards --search' to find it"
+        assert payload["error_code"] == "CLI_ERROR"
+
+
+class TestAgentCLIFeatures:
+    """Tests for agent-native CLI features."""
+
+    def setup_method(self):
+        from codecks_cli.cli import build_parser
+
+        self.parser = build_parser()
+
+    def test_ids_only_flag(self):
+        ns = self.parser.parse_args(["cards", "--ids-only"])
+        assert ns.ids_only is True
+
+    def test_ids_only_default_false(self):
+        ns = self.parser.parse_args(["cards"])
+        assert ns.ids_only is False
+
+    def test_commands_subcommand(self):
+        ns = self.parser.parse_args(["commands"])
+        assert ns.command == "commands"
+
+    def test_undo_subcommand(self):
+        ns = self.parser.parse_args(["undo"])
+        assert ns.command == "undo"
+
+
+class TestAtLastRef:
+    """Tests for @last reference expansion."""
+
+    def test_resolve_no_at_last(self):
+        from codecks_cli._last_result import resolve_at_refs
+
+        assert resolve_at_refs(["cards", "--deck", "Code"]) == ["cards", "--deck", "Code"]
+
+    def test_resolve_at_last_expands(self, tmp_path, monkeypatch):
+        import codecks_cli._last_result as lr
+
+        test_file = tmp_path / ".pm_last_result.json"
+        test_file.write_text('{"card_ids": ["uuid-1", "uuid-2"]}')
+        monkeypatch.setattr(lr, "_LAST_RESULT_PATH", str(test_file))
+
+        result = lr.resolve_at_refs(["done", "@last"])
+        assert result == ["done", "uuid-1", "uuid-2"]
+
+    def test_resolve_at_last_no_file(self, tmp_path, monkeypatch):
+        import codecks_cli._last_result as lr
+
+        monkeypatch.setattr(lr, "_LAST_RESULT_PATH", str(tmp_path / "nonexistent.json"))
+        result = lr.resolve_at_refs(["done", "@last"])
+        assert result == ["done", "@last"]  # No expansion if file missing
+
+    def test_save_and_load(self, tmp_path, monkeypatch):
+        import codecks_cli._last_result as lr
+
+        test_file = tmp_path / ".pm_last_result.json"
+        monkeypatch.setattr(lr, "_LAST_RESULT_PATH", str(test_file))
+
+        lr.save_last_result(["id-a", "id-b"])
+        loaded = lr.load_last_result()
+        assert loaded == ["id-a", "id-b"]

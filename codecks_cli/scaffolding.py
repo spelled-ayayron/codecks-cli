@@ -232,6 +232,7 @@ def scaffold_feature(
     priority: str | None = None,
     effort: int | None = None,
     allow_duplicate: bool = False,
+    lane_descriptions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Scaffold a Hero feature with lane sub-cards.
 
@@ -259,6 +260,7 @@ def scaffold_feature(
         priority=priority,
         effort=effort,
         allow_duplicate=allow_duplicate,
+        lane_descriptions=lane_descriptions,
     )
 
     hero_title = f"Feature: {spec.title}"
@@ -315,12 +317,21 @@ def scaffold_feature(
 
         def _make_sub(lane_def_inner, deck_id):
             sub_title = f"[{lane_def_inner.display_name}] {spec.title}"
-            checklist_lines = lane_def_inner.default_checklist
-            sub_body = (
-                "Scope:\n"
-                f"- {lane_def_inner.display_name} lane execution for feature goal\n\n"
-                "Checklist:\n" + "\n".join(f"- [] {line}" for line in checklist_lines)
+            # Use per-lane description if provided, otherwise fall back to boilerplate
+            custom_desc = (
+                spec.lane_descriptions.get(lane_def_inner.name)
+                if spec.lane_descriptions
+                else None
             )
+            if custom_desc:
+                sub_body = custom_desc
+            else:
+                checklist_lines = lane_def_inner.default_checklist
+                sub_body = (
+                    "Scope:\n"
+                    f"- {lane_def_inner.display_name} lane execution for feature goal\n\n"
+                    "Checklist:\n" + "\n".join(f"- [] {line}" for line in checklist_lines)
+                )
             res = create_card(sub_title, sub_body)
             sub_id = res.get("cardId")
             if not sub_id:

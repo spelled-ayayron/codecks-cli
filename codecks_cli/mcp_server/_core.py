@@ -15,6 +15,7 @@ from codecks_cli.config import (
     CONTRACT_SCHEMA_VERSION,
     MCP_RESPONSE_MODE,
 )
+from codecks_cli.mcp_server._repository import CardRepository
 
 _client: CodecksClient | None = None
 
@@ -33,6 +34,12 @@ def _get_client() -> CodecksClient:
 
 _snapshot_cache: dict | None = None
 _cache_loaded_at: float = 0.0  # time.monotonic() when loaded/warmed
+_repo = CardRepository()
+
+
+def get_repository() -> CardRepository:
+    """Return the card repository (populated after cache warm or disk load)."""
+    return _repo
 
 
 def _load_cache_from_disk() -> bool:
@@ -48,6 +55,13 @@ def _load_cache_from_disk() -> bool:
         data["fetched_ts"] = time.monotonic()
         _snapshot_cache = data
         _cache_loaded_at = data["fetched_ts"]
+        # Rebuild card indexes from loaded data
+        cards_data = data.get("cards_result")
+        if isinstance(cards_data, dict):
+            _repo.load(cards_data.get("cards", []))
+        decks_data = data.get("decks")
+        if isinstance(decks_data, list):
+            _repo.load_decks(decks_data)
         return True
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return False
@@ -92,10 +106,165 @@ def _invalidate_cache() -> None:
     global _snapshot_cache, _cache_loaded_at
     _snapshot_cache = None
     _cache_loaded_at = 0.0
+    _repo.clear()
+
+
+def _extract_hand_ids(hand: list) -> set[str]:
+    """Extract card IDs from hand list."""
+    return {c.get("id") for c in hand if isinstance(c, dict) and c.get("id")}
+
+
+def _compute_pm_focus(
+    cards: list[dict], hand_ids: set[str], *, stale_days: int = 14, limit: int = 5
+) -> dict:
+    """Compute PM focus dashboard from pre-fetched cards and hand.
+
+    Mirrors CodecksClient.pm_focus() at client.py:543-646.
+    Operates on the enriched card format already in cache.
+    """
+    from datetime import timedelta
+
+    from codecks_cli._utils import _parse_iso_timestamp
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+
+    started = []
+    blocked = []
+    in_review = []
+    hand_cards = []
+    stale = []
+    candidates = []
+    deck_agg: dict[str, dict[str, int]] = {}
+    owner_agg: dict[str, dict[str, int]] = {}
+
+    for card in cards:
+        status = card.get("status")
+        is_stale = False
+
+        if status == "started":
+            started.append(card)
+        if status == "blocked":
+            blocked.append(card)
+        if status == "in_review":
+            in_review.append(card)
+
+        cid = card.get("id")
+        if cid and cid in hand_ids:
+            hand_cards.append(card)
+        if status == "not_started" and cid and cid not in hand_ids:
+            candidates.append(card)
+
+        # Stale: started or in_review cards not updated in stale_days
+        if status in ("started", "in_review"):
+            updated = _parse_iso_timestamp(
+                card.get("updated_at") or card.get("lastUpdatedAt") or card.get("last_updated_at")
+            )
+            if updated and updated < cutoff:
+                stale.append(card)
+                is_stale = True
+
+        # Aggregate by deck and owner
+        deck = card.get("deck") or card.get("deck_name") or "unknown"
+        owner = card.get("owner") or card.get("owner_name") or "unassigned"
+        for key, agg in ((deck, deck_agg), (owner, owner_agg)):
+            if key not in agg:
+                agg[key] = {"total": 0, "blocked": 0, "stale": 0, "in_progress": 0}
+            agg[key]["total"] += 1
+            if status == "blocked":
+                agg[key]["blocked"] += 1
+            if is_stale:
+                agg[key]["stale"] += 1
+            if status in ("started", "in_review"):
+                agg[key]["in_progress"] += 1
+
+    # Sort candidates by priority (a > b > c > none)
+    pri_rank = {"a": 0, "b": 1, "c": 2, None: 3, "": 3}
+    candidates.sort(
+        key=lambda c: (
+            pri_rank.get(c.get("priority"), 3),
+            0 if c.get("effort") is not None else 1,
+            -(c.get("effort") or 0),
+            str(c.get("title", "")).lower(),
+        )
+    )
+    suggested = candidates[:limit]
+
+    return {
+        "counts": {
+            "started": len(started),
+            "blocked": len(blocked),
+            "in_review": len(in_review),
+            "hand": len(hand_cards),
+            "stale": len(stale),
+        },
+        "blocked": blocked,
+        "in_review": in_review,
+        "hand": hand_cards,
+        "stale": stale,
+        "suggested": suggested,
+        "deck_health": {
+            "by_deck": deck_agg,
+            "by_owner": owner_agg,
+        },
+        "filters": {
+            "project": None,
+            "owner": None,
+            "limit": limit,
+            "stale_days": stale_days,
+        },
+    }
+
+
+def _compute_standup(cards: list[dict], hand_ids: set[str], *, days: int = 2) -> dict:
+    """Compute daily standup from pre-fetched cards and hand.
+
+    Mirrors CodecksClient.standup() at client.py:648-696.
+    Operates on the enriched card format already in cache.
+    """
+    from datetime import timedelta
+
+    from codecks_cli._utils import _parse_iso_timestamp
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    recently_done = []
+    in_progress = []
+    blocked = []
+    hand_cards = []
+
+    for card in cards:
+        status = card.get("status")
+        cid = card.get("id")
+
+        if status == "done":
+            updated = _parse_iso_timestamp(
+                card.get("updated_at") or card.get("lastUpdatedAt") or card.get("last_updated_at")
+            )
+            if updated and updated >= cutoff:
+                recently_done.append(card)
+        elif status in ("started", "in_review"):
+            in_progress.append(card)
+
+        if status == "blocked":
+            blocked.append(card)
+
+        if cid and cid in hand_ids and status != "done":
+            hand_cards.append(card)
+
+    return {
+        "recently_done": recently_done,
+        "in_progress": in_progress,
+        "blocked": blocked,
+        "hand": hand_cards,
+        "filters": {"project": None, "owner": None, "days": days},
+    }
 
 
 def _warm_cache_impl() -> dict:
     """Fetch all cacheable data, store in memory and on disk.
+
+    Makes 4 API round-trips (down from ~10 before deduplication).
+    pm_focus and standup are computed from the fetched cards+hand data.
 
     Returns:
         Summary dict with card_count, hand_size, deck_count, fetched_at.
@@ -106,12 +275,17 @@ def _warm_cache_impl() -> dict:
     now_ts = time.monotonic()
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # 4 API round-trips (account, cards, hand, decks)
     account = client.get_account()
     cards_result = client.list_cards()
     hand = client.list_hand()
     decks = client.list_decks(include_card_counts=False)
-    pm_focus_data = client.pm_focus()
-    standup_data = client.standup()
+
+    # Compute derived views from pre-fetched data (0 API calls)
+    all_cards = cards_result.get("cards", []) if isinstance(cards_result, dict) else []
+    hand_ids = _extract_hand_ids(hand)
+    pm_focus_data = _compute_pm_focus(all_cards, hand_ids)
+    standup_data = _compute_standup(all_cards, hand_ids)
 
     snapshot = {
         "fetched_at": now_iso,
@@ -126,6 +300,11 @@ def _warm_cache_impl() -> dict:
 
     _snapshot_cache = snapshot
     _cache_loaded_at = now_ts
+
+    # Build card indexes and name mappings
+    _repo.load(all_cards)
+    if isinstance(decks, list):
+        _repo.load_decks(decks)
 
     # Persist to disk (atomic write)
     disk_data = dict(snapshot)
@@ -156,10 +335,44 @@ def _warm_cache_impl() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Agent session registry (in-memory, not persisted)
+# Agent session registry (persisted to disk)
 # ---------------------------------------------------------------------------
 
+_CLAIMS_FILE = ".pm_claims.json"
+_CLAIMS_PATH = os.path.join(os.path.dirname(CACHE_PATH), _CLAIMS_FILE)
+
 _agent_sessions: dict[str, dict] = {}
+
+
+def _save_claims() -> None:
+    """Persist agent claims to disk (atomic write via tempfile + os.replace)."""
+    try:
+        claims_dir = os.path.dirname(_CLAIMS_PATH) or "."
+        fd, tmp = tempfile.mkstemp(dir=claims_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(_agent_sessions, f, ensure_ascii=False)
+            os.replace(tmp, _CLAIMS_PATH)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        pass  # Disk write failure is non-fatal
+
+
+def _load_claims() -> None:
+    """Load persisted agent claims from disk. Missing/corrupt file is OK."""
+    global _agent_sessions
+    try:
+        with open(_CLAIMS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _agent_sessions.update(data)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass  # No claims file or corrupt — start fresh
 
 
 def _register_agent(agent_name: str, card_id: str | None = None) -> None:
@@ -175,6 +388,7 @@ def _register_agent(agent_name: str, card_id: str | None = None) -> None:
     if card_id and card_id not in _agent_sessions[agent_name]["active_cards"]:
         _agent_sessions[agent_name]["active_cards"].append(card_id)
         _agent_sessions[agent_name]["claimed_at"][card_id] = now_iso
+    _save_claims()
 
 
 def _unregister_agent_card(agent_name: str, card_id: str) -> bool:
@@ -186,6 +400,7 @@ def _unregister_agent_card(agent_name: str, card_id: str) -> bool:
         session["active_cards"].remove(card_id)
         session["claimed_at"].pop(card_id, None)
         session["last_seen"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _save_claims()
         return True
     return False
 
@@ -206,6 +421,10 @@ def _get_all_sessions() -> dict[str, dict]:
 def _reset_sessions() -> None:
     """Clear all agent sessions (for test isolation)."""
     _agent_sessions.clear()
+
+
+# Load persisted claims on module init
+_load_claims()
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +464,8 @@ def _invalidate_cache_for(method_name: str) -> None:
         return
     for key in keys:
         _snapshot_cache.pop(key, None)
+    if "cards_result" in keys:
+        _repo.clear()
 
 
 # ---------------------------------------------------------------------------

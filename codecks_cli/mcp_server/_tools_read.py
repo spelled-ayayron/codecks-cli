@@ -296,6 +296,76 @@ def _sort_cards(cards: list[dict], sort: str) -> list[dict]:
     return cards
 
 
+def _append_hand_suggestions(result: dict) -> dict:
+    """Add hand_suggestions to pm_focus result based on workflow preferences."""
+    import json
+    import os
+
+    from codecks_cli.config import _PROJECT_ROOT
+
+    prefs_path = os.path.join(_PROJECT_ROOT, ".pm_preferences.json")
+    prefs: dict = {}
+    try:
+        with open(prefs_path, encoding="utf-8") as f:
+            prefs = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+    lane_pref = prefs.get("hand_lane_preference", "code")
+    exclude_heroes = prefs.get("hand_exclude_heroes", True)
+    max_size = prefs.get("hand_max_size", 10)
+
+    # Get all cards from cache
+    cached_cards = _try_cache("cards_result")
+    if not isinstance(cached_cards, dict) or "cards" not in cached_cards:
+        return result
+
+    all_cards = cached_cards["cards"]
+
+    # Get current hand IDs
+    hand_cached = _try_cache("hand")
+    hand_ids = set()
+    if isinstance(hand_cached, list):
+        hand_ids = {c.get("id") for c in hand_cached if isinstance(c, dict)}
+
+    # Find cards matching lane preference not in hand
+    lane_tag = f"[{lane_pref.title()}]"
+    candidates = [
+        c for c in all_cards
+        if isinstance(c, dict)
+        and c.get("status") not in ("done",)
+        and not c.get("archived")
+        and lane_tag in str(c.get("title", ""))
+        and c.get("id") not in hand_ids
+    ]
+
+    if exclude_heroes:
+        candidates = [c for c in candidates if not c.get("child_cards") and not c.get("childCards")]
+
+    # Sort by priority (a > b > c > null)
+    priority_order = {"a": 0, "b": 1, "c": 2}
+    candidates.sort(key=lambda c: priority_order.get(c.get("priority", ""), 3))
+
+    suggestions = candidates[:5]
+
+    result["hand_suggestions"] = {
+        "lane_preference": lane_pref,
+        "exclude_heroes": exclude_heroes,
+        "max_hand_size": max_size,
+        "current_hand_size": len(hand_ids),
+        "cards": [
+            {
+                "id": c.get("id"),
+                "title": c.get("title"),
+                "priority": c.get("priority"),
+                "status": c.get("status"),
+            }
+            for c in suggestions
+        ],
+    }
+    return result
+
+
 def get_card(
     card_id: str,
     include_content: bool = True,
@@ -317,17 +387,20 @@ def get_card(
     except CliError as e:
         return _finalize_tool_result(_contract_error(str(e), "error"))
 
-    # Try cache when conversations not needed and not archived
+    # Try cache when conversations not needed and not archived (O(1) indexed lookup)
     if not archived and not include_conversations:
-        cached = _try_cache("cards_result")
-        if cached is not None and isinstance(cached, dict):
-            for card in cached.get("cards", []):
-                if isinstance(card, dict) and card.get("id") == card_id:
-                    detail = dict(card)
-                    if not include_content:
-                        detail.pop("content", None)
-                    detail.update(_core._get_cache_metadata())
-                    return _finalize_tool_result(_sanitize_card(detail))
+        repo = _core.get_repository()
+        card = repo.get(card_id)
+        if card is not None:
+            if include_content:
+                # Return full card from cache (no slimming — preserve body text)
+                detail = dict(card)
+            else:
+                # Slim the card for metadata-only checks
+                detail = _slim_card(dict(card))
+                detail.pop("content", None)
+            detail.update(_core._get_cache_metadata())
+            return _finalize_tool_result(_sanitize_card(detail))
 
     result = _call(
         "get_card",
@@ -431,6 +504,7 @@ def pm_focus(
                         for r in result[key][:limit]
                     ]
             result.update(_core._get_cache_metadata())
+            result = _append_hand_suggestions(result)
             return _finalize_tool_result(result)
 
     result = _call("pm_focus", project=project, owner=owner, limit=limit, stale_days=stale_days)
@@ -441,6 +515,11 @@ def pm_focus(
                 result[key] = [
                     _sanitize_card(_slim_card(r)) if isinstance(r, dict) else r for r in result[key]
                 ]
+
+    # Append hand suggestions based on workflow preferences
+    if isinstance(result, dict):
+        result = _append_hand_suggestions(result)
+
     return _finalize_tool_result(result)
 
 

@@ -785,6 +785,9 @@ class CodecksClient:
         doc: bool = False,
         allow_duplicate: bool = False,
         parent: str | None = None,
+        priority: str | None = None,
+        owner: str | None = None,
+        effort: str | int | None = None,
     ) -> dict[str, Any]:
         """Create a new card.
 
@@ -797,6 +800,9 @@ class CodecksClient:
             doc: If True, create as a doc card.
             allow_duplicate: Bypass duplicate title protection.
             parent: Parent card ID to nest under (creates a sub-card).
+            priority: Card priority (a, b, c). Set via post-create update.
+            owner: Card owner (by name). Set via post-create update.
+            effort: Card effort estimate. Set via post-create update.
 
         Returns:
             dict with ok=True, card_id, and title.
@@ -833,6 +839,16 @@ class CodecksClient:
         if post_update:
             update_card(card_id, **post_update)
 
+        # Priority, owner, effort use self.update_cards() which handles
+        # name→ID resolution and proper API field mapping.
+        if priority or owner or effort is not None:
+            self.update_cards(
+                [card_id],
+                priority=priority if priority and priority != "null" else None,
+                owner=owner,
+                effort=effort,
+            )
+
         result_dict = {
             "ok": True,
             "card_id": card_id,
@@ -840,6 +856,8 @@ class CodecksClient:
             "deck": placed_in,
             "doc": doc,
             "parent": parent,
+            "priority": priority,
+            "owner": owner,
         }
         if warnings:
             result_dict["warnings"] = warnings

@@ -1,8 +1,8 @@
 """Team coordination tools for multi-agent workflows (8 tools).
 
 Provides card claiming, delegation, work partitioning, and team dashboards.
-All coordination state is in-memory (not persisted) — use Codecks card
-fields (status, owner, comments) as the durable source of truth.
+Coordination state is persisted to .pm_claims.json — survives server restarts.
+Codecks card fields (status, owner, comments) remain the authoritative source.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def claim_card(card_id: str, agent_name: str, reason: str | None = None) -> dict
     """Claim a card for exclusive agent work.
 
     Prevents other agents from working on the same card. Claims are
-    in-memory only — they survive for the MCP server session.
+    persisted to disk and survive server restarts.
 
     Args:
         card_id: Full 36-char UUID of the card to claim.

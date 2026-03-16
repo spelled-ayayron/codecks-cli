@@ -15,6 +15,8 @@ from codecks_cli.commands import (
     cmd_cache,
     cmd_card,
     cmd_cards,
+    cmd_claim,
+    cmd_commands,
     cmd_comment,
     cmd_completion,
     cmd_conversations,
@@ -24,6 +26,7 @@ from codecks_cli.commands import (
     cmd_dispatch,
     cmd_done,
     cmd_feature,
+    cmd_feedback,
     cmd_gdd,
     cmd_gdd_auth,
     cmd_gdd_revoke,
@@ -31,18 +34,25 @@ from codecks_cli.commands import (
     cmd_generate_token,
     cmd_hand,
     cmd_milestones,
+    cmd_overview,
+    cmd_partition,
     cmd_pm_focus,
     cmd_projects,
     cmd_query,
+    cmd_release,
     cmd_split_features,
     cmd_standup,
     cmd_start,
     cmd_tags,
+    cmd_team_status,
+    cmd_tick_all,
+    cmd_tick_checkboxes,
     cmd_unarchive,
+    cmd_undo,
     cmd_unhand,
     cmd_update,
 )
-from codecks_cli.exceptions import CliError
+from codecks_cli.exceptions import CliError, SetupError
 from codecks_cli.setup_wizard import cmd_setup
 
 HELP_TEXT = """\
@@ -171,6 +181,25 @@ Commands:
     --refresh               Force re-fetch GDD before syncing
     --file <path>           Use a local markdown file (use "-" for stdin)
     --save-cache            Save fetched content to .gdd_cache.md for offline use
+  tick-checkboxes <id> <items...> - Tick specific checkbox items by text match
+  tick-all <id>           - Tick ALL unchecked checkboxes on a card
+  overview                - Compact project overview (aggregate counts only)
+    --project <name>        Filter by project
+  partition               - Partition cards into batches for parallel agent work
+    --by <lane|owner>       Partition strategy (default: lane)
+    --status <statuses>     Comma-separated status filter
+    --project <name>        Filter by project
+  claim <id>              - Claim a card for exclusive agent work
+    --agent <name>          Agent name (required)
+    --reason <text>         Optional reason
+  release <id>            - Release a claimed card
+    --agent <name>          Agent name (required)
+    --summary <text>        Optional work summary
+  team-status             - Show what each agent is working on
+  feedback "message"      - Save CLI feedback for development team
+    --category <type>       missing_feature, bug, error, improvement, usability
+    --tool <name>           Related tool/command
+    --context <text>        Brief session context
   gdd-auth                - Authorize Google Drive access (opens browser, one-time)
   gdd-revoke              - Revoke Google Drive authorization and delete tokens
   generate-token          - Generate a new Report Token using the Access Key
@@ -322,6 +351,8 @@ def build_parser():
     p.add_argument("--stats", action="store_true")
     p.add_argument("--hand", action="store_true")
     p.add_argument("--archived", action="store_true")
+    p.add_argument("--ids-only", action="store_true", dest="ids_only",
+                   help="Output only card UUIDs, one per line (pipe-friendly)")
     p.set_defaults(func=cmd_cards)
 
     # --- card ---
@@ -532,10 +563,64 @@ def build_parser():
     p.add_argument("json_data")
     p.set_defaults(func=cmd_dispatch)
 
+    # --- tick-checkboxes ---
+    p = sub.add_parser("tick-checkboxes")
+    p.add_argument("card_id")
+    p.add_argument("items", nargs="+", help="Checkbox text substrings to tick")
+    p.set_defaults(func=cmd_tick_checkboxes)
+
+    # --- tick-all ---
+    p = sub.add_parser("tick-all")
+    p.add_argument("card_id")
+    p.set_defaults(func=cmd_tick_all)
+
+    # --- overview ---
+    p = sub.add_parser("overview")
+    p.add_argument("--project")
+    p.set_defaults(func=cmd_overview)
+
+    # --- partition ---
+    p = sub.add_parser("partition")
+    p.add_argument("--by", choices=["lane", "owner"], default="lane")
+    p.add_argument("--status", help="Comma-separated status filter (default: not_started,started)")
+    p.add_argument("--project")
+    p.set_defaults(func=cmd_partition)
+
+    # --- claim ---
+    p = sub.add_parser("claim")
+    p.add_argument("card_id")
+    p.add_argument("--agent", required=True, help="Agent name claiming the card")
+    p.add_argument("--reason")
+    p.set_defaults(func=cmd_claim)
+
+    # --- release ---
+    p = sub.add_parser("release")
+    p.add_argument("card_id")
+    p.add_argument("--agent", required=True, help="Agent name releasing the card")
+    p.add_argument("--summary")
+    p.set_defaults(func=cmd_release)
+
+    # --- team-status ---
+    sub.add_parser("team-status").set_defaults(func=cmd_team_status)
+
+    # --- feedback ---
+    p = sub.add_parser("feedback")
+    p.add_argument("message")
+    p.add_argument("--category", choices=["missing_feature", "bug", "error", "improvement", "usability"], default="improvement")
+    p.add_argument("--tool", help="Which tool/command this relates to")
+    p.add_argument("--context", help="Brief session context")
+    p.set_defaults(func=cmd_feedback)
+
     # --- completion ---
     p = sub.add_parser("completion")
     p.add_argument("--shell", choices=["bash", "zsh", "fish"], required=True)
     p.set_defaults(func=cmd_completion)
+
+    # --- commands (agent self-discovery) ---
+    sub.add_parser("commands").set_defaults(func=cmd_commands)
+
+    # --- undo (revert last mutation) ---
+    sub.add_parser("undo").set_defaults(func=cmd_undo)
 
     # --- version (bare word) ---
     sub.add_parser("version").set_defaults(func=None)
@@ -547,7 +632,7 @@ def build_parser():
 # Command dispatch
 # ---------------------------------------------------------------------------
 
-NO_TOKEN_COMMANDS = {"setup", "gdd-auth", "gdd-revoke", "generate-token", "version", "completion"}
+NO_TOKEN_COMMANDS = {"setup", "gdd-auth", "gdd-revoke", "generate-token", "version", "completion", "team-status", "feedback", "claim", "release"}
 
 
 def _error_type_from_message(message):
@@ -563,14 +648,19 @@ def _error_type_from_message(message):
 def _emit_cli_error(err, fmt):
     msg = str(err)
     if fmt == "json":
+        error_detail = {
+            "type": _error_type_from_message(msg),
+            "message": msg,
+            "exit_code": getattr(err, "exit_code", 1),
+        }
+        recovery = getattr(err, "recovery_hint", None)
+        if recovery:
+            error_detail["recovery"] = recovery
         payload = {
             "ok": False,
             "schema_version": config.CONTRACT_SCHEMA_VERSION,
-            "error": {
-                "type": _error_type_from_message(msg),
-                "message": msg,
-                "exit_code": getattr(err, "exit_code", 1),
-            },
+            "error_code": "SETUP_ERROR" if isinstance(err, SetupError) else "CLI_ERROR",
+            "error": error_detail,
         }
         print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
         return
@@ -599,6 +689,11 @@ def main():
         sys.exit(0)
 
     try:
+        # Expand @last references to card IDs from previous command
+        from codecks_cli._last_result import resolve_at_refs
+
+        remaining_argv = resolve_at_refs(remaining_argv)
+
         parser = build_parser()
         ns = parser.parse_args(remaining_argv)
         ns.format = fmt  # inject global format flag

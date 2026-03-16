@@ -112,10 +112,9 @@ def list_cards(
         "lastUpdatedAt",
         "isDoc",
         "childCardInfo",
+        "content",
         {"assignee": ["name", "id"]},
     ]
-    if search_filter:
-        card_fields.append("content")
     card_query = {"visibility": "archived" if archived else "default"}
 
     # Parse and validate status filter (supports comma-separated values)
@@ -126,6 +125,10 @@ def list_cards(
             # Single value → server-side filter
             card_query["status"] = status_values[0]
             status_values = None  # no client-side filter needed
+        elif len(status_values) > 1:
+            # Multi-value → use 'in' operator for server-side filter
+            card_query["status"] = {"in": list(status_values)}
+            status_values = None  # server handled it
 
     # Resolve deck filter
     if deck_filter:

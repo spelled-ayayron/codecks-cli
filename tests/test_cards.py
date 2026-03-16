@@ -117,13 +117,12 @@ class TestMultiValueFilter:
     """Multi-value --status and --priority filters."""
 
     @patch("codecks_cli.cards.query")
-    def test_multi_status_client_side_filter(self, mock_query):
+    def test_multi_status_uses_in_operator(self, mock_query):
+        """Multi-status filter uses 'in' operator for server-side filtering."""
         mock_query.return_value = {
             "card": {
-                "a": {"status": "done"},
                 "b": {"status": "started"},
                 "c": {"status": "blocked"},
-                "d": {"status": "not_started"},
             },
             "user": {},
         }
@@ -131,6 +130,10 @@ class TestMultiValueFilter:
 
         result = list_cards(status_filter="started,blocked")
         assert set(result["card"].keys()) == {"b", "c"}
+        # Verify the 'in' operator was used in the query
+        call_q = mock_query.call_args.args[0]
+        root_key = list(call_q["_root"][0]["account"][0].keys())[0]
+        assert '"in"' in root_key
 
     @patch("codecks_cli.cards.query")
     def test_single_status_still_server_side(self, mock_query):

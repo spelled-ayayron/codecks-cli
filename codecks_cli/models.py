@@ -39,6 +39,7 @@ class FeatureSpec:
     effort: int | None
     format: str
     allow_duplicate: bool
+    lane_descriptions: dict[str, str] | None = None
 
     # --- Backward-compat properties ---
 
@@ -172,6 +173,7 @@ class FeatureSpec:
         effort=None,
         format="json",
         allow_duplicate=False,
+        lane_descriptions=None,
     ):
         """Create a FeatureSpec from keyword arguments (programmatic API)."""
         title = (title or "").strip()
@@ -218,6 +220,7 @@ class FeatureSpec:
             effort=effort,
             format=format,
             allow_duplicate=allow_duplicate,
+            lane_descriptions=lane_descriptions,
         )
 
 
@@ -265,10 +268,18 @@ class FeatureScaffoldReport:
         decks: dict[str, str | None] = {"hero": self.hero_deck}
         for name in lane_names():
             decks[name] = self.lane_decks.get(name)
+
+        # Build subcards_by_lane mapping from existing subcards list
+        subcards_by_lane: dict[str, str | None] = {}
+        subcard_lane_ids = {s.lane: s.id for s in self.subcards}
+        for name in lane_names():
+            subcards_by_lane[name] = subcard_lane_ids.get(name)
+
         out = {
             "ok": True,
             "hero": {"id": self.hero_id, "title": self.hero_title},
             "subcards": [x.to_dict() for x in self.subcards],
+            "subcards_by_lane": subcards_by_lane,
             "decks": decks,
         }
         if self.notes:

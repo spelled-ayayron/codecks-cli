@@ -10,6 +10,10 @@ class CliError(Exception):
 
     exit_code = 1
 
+    def __init__(self, message, *, recovery_hint=None):
+        super().__init__(message)
+        self.recovery_hint = recovery_hint
+
 
 class SetupError(CliError):
     """Exit code 2 — token expired, no config."""

@@ -1,12 +1,18 @@
 """Lane registry — single source of truth for deck categories.
 
-Imports only tags.py (another standalone data module). Adding a new
+Imports only tags.py and config.py (standalone data modules). Adding a new
 category means appending one LaneDefinition to LANES and updating
 LANE_TAGS in tags.py.
+
+Lane default checklists can be overridden via a ``.codecks_lanes.json`` file
+in the project root. See ``_load_lane_config()`` for details.
 """
 
+import json
+import os
 from dataclasses import dataclass
 
+from codecks_cli.config import _PROJECT_ROOT
 from codecks_cli.tags import LANE_TAGS
 
 
@@ -144,6 +150,65 @@ LANES: tuple[LaneDefinition, ...] = (
         cli_help="Audio sub-card deck",
     ),
 )
+
+
+_LANE_CONFIG_FILE = ".codecks_lanes.json"
+_LANE_CONFIG_PATH = os.path.join(_PROJECT_ROOT, _LANE_CONFIG_FILE)
+
+
+def _load_lane_config() -> dict[str, list[str]]:
+    """Load lane checklist overrides from ``.codecks_lanes.json``.
+
+    Expected format::
+
+        {
+            "code": ["Step 1", "Step 2"],
+            "design": ["Design step 1"]
+        }
+
+    Returns:
+        Mapping of lane name → checklist items.  Empty dict if the
+        config file is missing or malformed.
+    """
+    try:
+        with open(_LANE_CONFIG_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    overrides: dict[str, list[str]] = {}
+    for key, value in data.items():
+        if isinstance(key, str) and isinstance(value, list) and all(isinstance(v, str) for v in value):
+            overrides[key] = value
+    return overrides
+
+
+def _apply_lane_overrides(
+    lanes: tuple[LaneDefinition, ...],
+    overrides: dict[str, list[str]],
+) -> tuple[LaneDefinition, ...]:
+    """Return a new LANES tuple with default_checklist overridden where configured."""
+    if not overrides:
+        return lanes
+    result: list[LaneDefinition] = []
+    for lane in lanes:
+        if lane.name in overrides:
+            lane = LaneDefinition(
+                name=lane.name,
+                display_name=lane.display_name,
+                required=lane.required,
+                keywords=lane.keywords,
+                default_checklist=tuple(overrides[lane.name]),
+                tags=lane.tags,
+                cli_help=lane.cli_help,
+            )
+        result.append(lane)
+    return tuple(result)
+
+
+# Apply config file overrides (no-op if file is missing)
+LANES = _apply_lane_overrides(LANES, _load_lane_config())
 
 
 def get_lane(name: str) -> LaneDefinition:

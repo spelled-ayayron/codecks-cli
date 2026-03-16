@@ -1,0 +1,22 @@
+{
+    "code": [
+        "Implement core logic",
+        "Handle edge cases",
+        "Add tests/verification"
+    ],
+    "design": [
+        "Define target player feel",
+        "Tune balance/economy parameters",
+        "Run playtest and iterate"
+    ],
+    "art": [
+        "Create required assets/content",
+        "Integrate assets in game flow",
+        "Visual quality pass"
+    ],
+    "audio": [
+        "Create required audio assets",
+        "Integrate audio in game flow",
+        "Audio quality/mix pass"
+    ]
+}

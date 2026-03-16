@@ -97,6 +97,10 @@ def _inject_cache(snapshot=None):
     snap = snapshot or _make_snapshot()
     _core._snapshot_cache = snap
     _core._cache_loaded_at = snap["fetched_ts"]
+    # Rebuild card repository indexes from injected data
+    cards_data = snap.get("cards_result")
+    if isinstance(cards_data, dict):
+        _core._repo.load(cards_data.get("cards", []))
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +231,6 @@ class TestWarmCache:
         mock_client.list_cards.return_value = {"cards": SAMPLE_CARDS, "stats": None}
         mock_client.list_hand.return_value = SAMPLE_HAND
         mock_client.list_decks.return_value = SAMPLE_DECKS
-        mock_client.pm_focus.return_value = SAMPLE_PM_FOCUS
-        mock_client.standup.return_value = SAMPLE_STANDUP
 
         with (
             patch.object(_core, "_get_client", return_value=mock_client),
@@ -242,6 +244,76 @@ class TestWarmCache:
         assert result["deck_count"] == 2
         assert _core._snapshot_cache is not None
         assert _core._is_cache_valid() is True
+        # pm_focus and standup are computed, not fetched
+        mock_client.pm_focus.assert_not_called()
+        mock_client.standup.assert_not_called()
+        assert "pm_focus" in _core._snapshot_cache
+        assert "standup" in _core._snapshot_cache
+
+    def test_warm_cache_impl_computes_pm_focus(self):
+        """Verify computed pm_focus has the expected structure."""
+        mock_client = MagicMock()
+        mock_client.get_account.return_value = SAMPLE_ACCOUNT
+        mock_client.list_cards.return_value = {"cards": SAMPLE_CARDS, "stats": None}
+        mock_client.list_hand.return_value = SAMPLE_HAND
+        mock_client.list_decks.return_value = SAMPLE_DECKS
+
+        with (
+            patch.object(_core, "_get_client", return_value=mock_client),
+            patch.object(_core, "CACHE_PATH", "/dev/null"),
+        ):
+            _core._warm_cache_impl()
+
+        pm = _core._snapshot_cache["pm_focus"]
+        assert "counts" in pm
+        assert "blocked" in pm
+        assert "in_review" in pm
+        assert "hand" in pm
+        assert "stale" in pm
+        assert "suggested" in pm
+        assert "deck_health" in pm
+        assert "filters" in pm
+        # Card B is blocked
+        assert pm["counts"]["blocked"] == 1
+
+    def test_warm_cache_impl_computes_standup(self):
+        """Verify computed standup has the expected structure."""
+        mock_client = MagicMock()
+        mock_client.get_account.return_value = SAMPLE_ACCOUNT
+        mock_client.list_cards.return_value = {"cards": SAMPLE_CARDS, "stats": None}
+        mock_client.list_hand.return_value = SAMPLE_HAND
+        mock_client.list_decks.return_value = SAMPLE_DECKS
+
+        with (
+            patch.object(_core, "_get_client", return_value=mock_client),
+            patch.object(_core, "CACHE_PATH", "/dev/null"),
+        ):
+            _core._warm_cache_impl()
+
+        standup = _core._snapshot_cache["standup"]
+        assert "recently_done" in standup
+        assert "in_progress" in standup
+        assert "blocked" in standup
+        assert "hand" in standup
+        assert "filters" in standup
+
+    def test_warm_cache_populates_repository(self):
+        """Verify warm_cache builds repository indexes."""
+        mock_client = MagicMock()
+        mock_client.get_account.return_value = SAMPLE_ACCOUNT
+        mock_client.list_cards.return_value = {"cards": SAMPLE_CARDS, "stats": None}
+        mock_client.list_hand.return_value = SAMPLE_HAND
+        mock_client.list_decks.return_value = SAMPLE_DECKS
+
+        with (
+            patch.object(_core, "_get_client", return_value=mock_client),
+            patch.object(_core, "CACHE_PATH", "/dev/null"),
+        ):
+            _core._warm_cache_impl()
+
+        repo = _core.get_repository()
+        assert repo.count == 3
+        assert repo.get(SAMPLE_CARDS[0]["id"]) is not None
 
     def test_warm_cache_impl_writes_disk(self, tmp_path):
         mock_client = MagicMock()
@@ -249,8 +321,6 @@ class TestWarmCache:
         mock_client.list_cards.return_value = {"cards": [], "stats": None}
         mock_client.list_hand.return_value = []
         mock_client.list_decks.return_value = []
-        mock_client.pm_focus.return_value = {"counts": {}}
-        mock_client.standup.return_value = {}
 
         cache_file = tmp_path / ".pm_cache.json"
         with (
@@ -273,8 +343,6 @@ class TestWarmCache:
         mock_client.list_cards.return_value = {"cards": SAMPLE_CARDS, "stats": None}
         mock_client.list_hand.return_value = SAMPLE_HAND
         mock_client.list_decks.return_value = SAMPLE_DECKS
-        mock_client.pm_focus.return_value = SAMPLE_PM_FOCUS
-        mock_client.standup.return_value = SAMPLE_STANDUP
 
         with (
             patch("codecks_cli.mcp_server._core._get_client", return_value=mock_client),

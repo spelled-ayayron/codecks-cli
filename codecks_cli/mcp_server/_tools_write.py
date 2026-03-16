@@ -25,8 +25,14 @@ def create_card(
     doc: bool = False,
     allow_duplicate: bool = False,
     parent: str | None = None,
+    priority: Literal["a", "b", "c"] | None = None,
+    owner: str | None = None,
+    effort: str | None = None,
 ) -> dict:
     """Create a new card. Set deck/project to place it. Use parent to nest as sub-card.
+
+    Priority, owner, and effort are set via a post-create update in the same
+    call — one MCP tool invocation handles everything.
 
     Args:
         title: Card title (max 500 chars).
@@ -37,9 +43,12 @@ def create_card(
         doc: True to create a doc card instead of a normal card.
         allow_duplicate: True to skip duplicate-title check.
         parent: Parent card UUID to nest this as a sub-card.
+        priority: Card priority (a=high, b=medium, c=low). Applied after creation.
+        owner: Card owner name (e.g. 'Thomas'). Applied after creation.
+        effort: Effort estimate (integer string). Applied after creation.
 
     Returns:
-        Dict with ok, card_id, and title of the created card.
+        Dict with ok, card_id, title, and applied priority/owner.
     """
     try:
         title = _validate_input(title, "title")
@@ -58,6 +67,9 @@ def create_card(
             doc=doc,
             allow_duplicate=allow_duplicate,
             parent=parent,
+            priority=priority,
+            owner=owner,
+            effort=effort,
         )
     )
 
@@ -250,6 +262,7 @@ def scaffold_feature(
     priority: Literal["a", "b", "c", "null"] | None = None,
     effort: int | None = None,
     allow_duplicate: bool = False,
+    lane_descriptions: str | None = None,
 ) -> dict:
     """Create a Hero card with Code/Design/Art/Audio sub-cards. Transaction-safe rollback on failure.
 
@@ -261,6 +274,10 @@ def scaffold_feature(
         design_owner: Override owner for Design sub-card (falls back to owner).
         art_owner: Override owner for Art sub-card (falls back to owner).
         audio_owner: Override owner for Audio sub-card (falls back to owner).
+        lane_descriptions: JSON object mapping lane name to custom body text.
+            Keys: "code", "design", "art", "audio". When provided, uses the
+            description as the sub-card body instead of the boilerplate template.
+            Example: ``{"code": "Implement the steeping timer", "design": "Balance brew times"}``
     """
     try:
         title = _validate_input(title, "title")
@@ -268,6 +285,31 @@ def scaffold_feature(
             description = _validate_input(description, "description")
     except CliError as e:
         return _finalize_tool_result(_contract_error(str(e), "error"))
+
+    # Parse lane_descriptions JSON string into dict
+    parsed_lane_descriptions: dict[str, str] | None = None
+    if lane_descriptions is not None:
+        import json
+
+        try:
+            parsed_lane_descriptions = json.loads(lane_descriptions)
+            if not isinstance(parsed_lane_descriptions, dict):
+                return _finalize_tool_result(
+                    _contract_error(
+                        "lane_descriptions must be a JSON object mapping lane names to strings.",
+                        "error",
+                        error_code="INVALID_INPUT",
+                    )
+                )
+        except json.JSONDecodeError as e:
+            return _finalize_tool_result(
+                _contract_error(
+                    f"lane_descriptions is not valid JSON: {e}",
+                    "error",
+                    error_code="INVALID_INPUT",
+                )
+            )
+
     return _finalize_tool_result(
         _call(
             "scaffold_feature",
@@ -288,6 +330,7 @@ def scaffold_feature(
             priority=priority,
             effort=effort,
             allow_duplicate=allow_duplicate,
+            lane_descriptions=parsed_lane_descriptions,
         )
     )
 
@@ -406,6 +449,329 @@ def update_card_body(card_id: str, body: str) -> dict:
 
     new_content = replace_body(old_content, body)
     return _finalize_tool_result(_call("update_cards", card_ids=[card_id], content=new_content))
+
+
+def batch_update_bodies(
+    updates: str,
+) -> dict:
+    """Update bodies on multiple cards in one call. More efficient than
+    individual update_card_body calls for bulk enrichment after scaffolding.
+
+    Args:
+        updates: JSON array of {card_id, body} objects. Max 20 per call.
+
+    Returns:
+        Dict with ok, updated count, results per card, and any errors.
+    """
+    import json
+
+    try:
+        parsed = json.loads(updates)
+    except json.JSONDecodeError as e:
+        return _finalize_tool_result(
+            _contract_error(
+                f"updates is not valid JSON: {e}",
+                "error",
+                error_code="INVALID_INPUT",
+            )
+        )
+
+    if not isinstance(parsed, list):
+        return _finalize_tool_result(
+            _contract_error(
+                "updates must be a JSON array of {card_id, body} objects.",
+                "error",
+                error_code="INVALID_INPUT",
+            )
+        )
+
+    if len(parsed) > 20:
+        return _finalize_tool_result(
+            _contract_error(
+                f"Too many updates: {len(parsed)} (max 20 per call).",
+                "error",
+                error_code="INVALID_INPUT",
+            )
+        )
+
+    from codecks_cli._content import replace_body
+
+    results: list[dict] = []
+    errors: list[dict] = []
+    updated = 0
+
+    for i, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            errors.append({"index": i, "error": "Item must be a {card_id, body} object."})
+            continue
+
+        card_id = item.get("card_id", "")
+        body = item.get("body", "")
+
+        if not card_id:
+            errors.append({"index": i, "error": "Missing card_id."})
+            continue
+
+        try:
+            _validate_uuid(card_id)
+            body = _validate_input(body, "content")
+        except CliError as e:
+            errors.append({"index": i, "card_id": card_id, "error": str(e)})
+            continue
+
+        # Read existing card to get current content (same as update_card_body)
+        card_result = _call("get_card", card_id=card_id)
+        if isinstance(card_result, dict) and card_result.get("ok") is False:
+            errors.append({"index": i, "card_id": card_id, "error": card_result.get("error", "Failed to read card.")})
+            continue
+
+        old_content = ""
+        if isinstance(card_result, dict):
+            old_content = card_result.get("content") or ""
+
+        new_content = replace_body(old_content, body)
+        update_result = _call("update_cards", card_ids=[card_id], content=new_content)
+
+        if isinstance(update_result, dict) and update_result.get("ok") is False:
+            errors.append({"index": i, "card_id": card_id, "error": update_result.get("error", "Update failed.")})
+            continue
+
+        results.append({"card_id": card_id, "ok": True})
+        updated += 1
+
+    response: dict = {
+        "ok": len(errors) == 0,
+        "updated": updated,
+        "total": len(parsed),
+        "results": results,
+    }
+    if errors:
+        response["errors"] = errors
+    return _finalize_tool_result(response)
+
+
+def tick_checkboxes(
+    card_id: str,
+    items: str,
+    untick: bool = False,
+) -> dict:
+    """Tick (or untick) specific checkbox items in a card's content.
+
+    Reads the card, finds checkboxes matching the given text substrings,
+    toggles them, and writes back.
+
+    Args:
+        card_id: Full 36-char UUID.
+        items: JSON array of strings to match against checkbox text.
+               Each string is matched as a substring (case-insensitive).
+               Example: '["Lane coverage", "Integration verified"]'
+        untick: If True, change [x] to [] instead of [] to [x].
+
+    Returns:
+        Dict with ok, ticked, already_ticked, not_found, total_checkboxes, checked_checkboxes.
+    """
+    import json
+    import re
+
+    try:
+        _validate_uuid(card_id)
+    except CliError as e:
+        return _finalize_tool_result(_contract_error(str(e), "error"))
+
+    # Parse items JSON
+    try:
+        item_list = json.loads(items)
+    except json.JSONDecodeError as e:
+        return _finalize_tool_result(
+            _contract_error(
+                f"items is not valid JSON: {e}",
+                "error",
+                error_code="INVALID_INPUT",
+            )
+        )
+
+    if not isinstance(item_list, list) or not all(isinstance(i, str) for i in item_list):
+        return _finalize_tool_result(
+            _contract_error(
+                "items must be a JSON array of strings.",
+                "error",
+                error_code="INVALID_INPUT",
+            )
+        )
+
+    if not item_list:
+        return _finalize_tool_result(
+            _contract_error(
+                "items array is empty. Provide at least one substring to match.",
+                "error",
+                error_code="INVALID_INPUT",
+            )
+        )
+
+    # Read the card content
+    card_result = _call("get_card", card_id=card_id)
+    if isinstance(card_result, dict) and card_result.get("ok") is False:
+        return _finalize_tool_result(card_result)
+
+    content = ""
+    if isinstance(card_result, dict):
+        content = card_result.get("content") or ""
+
+    if not content:
+        return _finalize_tool_result(
+            _contract_error(
+                "Card has no content.",
+                "error",
+                error_code="NO_CONTENT",
+            )
+        )
+
+    # Checkbox patterns
+    unchecked_re = re.compile(r"^(\s*- \[)\](.*)$")
+    checked_re = re.compile(r"^(\s*- \[)x\](.*)$")
+
+    lines = content.split("\n")
+    ticked: list[str] = []
+    already_ticked: list[str] = []
+    not_found: list[str] = list(item_list)  # Track which items we haven't matched
+    changed = False
+
+    for i, line in enumerate(lines):
+        for item_text in item_list:
+            item_lower = item_text.lower()
+            if item_lower not in line.lower():
+                continue
+
+            if not untick:
+                # Tick: change - [] to - [x]
+                m = unchecked_re.match(line)
+                if m:
+                    lines[i] = m.group(1) + "x]" + m.group(2)
+                    ticked.append(item_text)
+                    if item_text in not_found:
+                        not_found.remove(item_text)
+                    changed = True
+                    break
+                # Already checked?
+                m2 = checked_re.match(line)
+                if m2:
+                    already_ticked.append(item_text)
+                    if item_text in not_found:
+                        not_found.remove(item_text)
+                    break
+            else:
+                # Untick: change - [x] to - []
+                m = checked_re.match(line)
+                if m:
+                    lines[i] = m.group(1) + "]" + m.group(2)
+                    ticked.append(item_text)
+                    if item_text in not_found:
+                        not_found.remove(item_text)
+                    changed = True
+                    break
+                # Already unchecked?
+                m2 = unchecked_re.match(line)
+                if m2:
+                    already_ticked.append(item_text)
+                    if item_text in not_found:
+                        not_found.remove(item_text)
+                    break
+
+    # Count total and checked checkboxes in the final content
+    new_content = "\n".join(lines)
+    total_checkboxes = len(re.findall(r"^\s*- \[[ x]\]", new_content, re.MULTILINE))
+    checked_checkboxes = len(re.findall(r"^\s*- \[x\]", new_content, re.MULTILINE))
+
+    # Write back if changed
+    if changed:
+        update_result = _call("update_cards", card_ids=[card_id], content=new_content)
+        if isinstance(update_result, dict) and update_result.get("ok") is False:
+            return _finalize_tool_result(update_result)
+
+    action = "unticked" if untick else "ticked"
+    return _finalize_tool_result(
+        {
+            "ok": True,
+            action: ticked,
+            "already_done": already_ticked,
+            "not_found": not_found,
+            "total_checkboxes": total_checkboxes,
+            "checked_checkboxes": checked_checkboxes,
+            "changed": changed,
+        }
+    )
+
+
+def tick_all_checkboxes(
+    card_id: str,
+) -> dict:
+    """Tick all unchecked checkbox items on a card. Use when marking a card done.
+
+    Args:
+        card_id: Full 36-char UUID.
+
+    Returns:
+        Dict with ok, ticked_count, total_checkboxes, already_checked.
+    """
+    import re
+
+    try:
+        _validate_uuid(card_id)
+    except CliError as e:
+        return _finalize_tool_result(_contract_error(str(e), "error"))
+
+    # Read the card content
+    card_result = _call("get_card", card_id=card_id)
+    if isinstance(card_result, dict) and card_result.get("ok") is False:
+        return _finalize_tool_result(card_result)
+
+    content = ""
+    if isinstance(card_result, dict):
+        content = card_result.get("content") or ""
+
+    if not content:
+        return _finalize_tool_result(
+            _contract_error(
+                "Card has no content.",
+                "error",
+                error_code="NO_CONTENT",
+            )
+        )
+
+    # Count before
+    already_checked = len(re.findall(r"^\s*- \[x\]", content, re.MULTILINE))
+    total_unchecked = len(re.findall(r"^\s*- \[\]", content, re.MULTILINE))
+
+    if total_unchecked == 0:
+        total_checkboxes = already_checked
+        return _finalize_tool_result(
+            {
+                "ok": True,
+                "ticked_count": 0,
+                "total_checkboxes": total_checkboxes,
+                "already_checked": already_checked,
+                "changed": False,
+            }
+        )
+
+    # Replace all unchecked with checked
+    new_content = re.sub(r"^(\s*- \[)\]", r"\1x]", content, flags=re.MULTILINE)
+    total_checkboxes = already_checked + total_unchecked
+
+    # Write back
+    update_result = _call("update_cards", card_ids=[card_id], content=new_content)
+    if isinstance(update_result, dict) and update_result.get("ok") is False:
+        return _finalize_tool_result(update_result)
+
+    return _finalize_tool_result(
+        {
+            "ok": True,
+            "ticked_count": total_unchecked,
+            "total_checkboxes": total_checkboxes,
+            "already_checked": already_checked,
+            "changed": True,
+        }
+    )
 
 
 def find_and_update(
@@ -534,4 +900,7 @@ def register(mcp):
     mcp.tool()(add_to_hand)
     mcp.tool()(remove_from_hand)
     mcp.tool()(update_card_body)
+    mcp.tool()(batch_update_bodies)
+    mcp.tool()(tick_checkboxes)
+    mcp.tool()(tick_all_checkboxes)
     mcp.tool()(find_and_update)

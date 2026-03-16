@@ -144,6 +144,19 @@ def cmd_cards(ns):
         else:
             paged_cards = cards[offset:]
             has_more = False
+
+        # Save card IDs for @last reference
+        from codecks_cli._last_result import save_last_result
+
+        card_ids = [c.get("id") for c in paged_cards if isinstance(c, dict) and c.get("id")]
+        save_last_result(card_ids)
+
+        # --ids-only: output UUIDs only, one per line (pipe-friendly for xargs)
+        if getattr(ns, "ids_only", False):
+            for cid in card_ids:
+                print(cid)
+            return
+
         result = dict(result)
         result["cards"] = paged_cards
         result["total_count"] = total
@@ -276,6 +289,9 @@ def cmd_split_features(ns):
 def cmd_update(ns):
     if _dry_run_guard("update card(s)", f"ids={ns.card_ids}"):
         return
+    from codecks_cli._operations import snapshot_before_mutation
+
+    snapshot_before_mutation(_get_client(), ns.card_ids)
     fmt = ns.format
     result = _get_client().update_cards(
         ns.card_ids,
@@ -328,6 +344,9 @@ def cmd_delete(ns):
 def cmd_done(ns):
     if _dry_run_guard("mark done", f"{len(ns.card_ids)} card(s)"):
         return
+    from codecks_cli._operations import snapshot_before_mutation
+
+    snapshot_before_mutation(_get_client(), ns.card_ids)
     _get_client().mark_done(ns.card_ids)
     mutation_response("Marked done", details=f"{len(ns.card_ids)} card(s)", fmt=ns.format)
 
@@ -335,6 +354,9 @@ def cmd_done(ns):
 def cmd_start(ns):
     if _dry_run_guard("mark started", f"{len(ns.card_ids)} card(s)"):
         return
+    from codecks_cli._operations import snapshot_before_mutation
+
+    snapshot_before_mutation(_get_client(), ns.card_ids)
     _get_client().mark_started(ns.card_ids)
     mutation_response(
         "Marked started",
@@ -635,4 +657,158 @@ def cmd_dispatch(ns):
         if not payload:
             raise CliError("[ERROR] Strict mode: dispatch payload cannot be empty.")
     result = dispatch(path, payload)
+    output(result, fmt=ns.format)
+
+
+# ---------------------------------------------------------------------------
+# Checkbox commands
+# ---------------------------------------------------------------------------
+
+
+def cmd_tick_checkboxes(ns):
+    from codecks_cli._operations import tick_checkboxes
+
+    if _dry_run_guard("tick checkboxes", f"card {ns.card_id}, items: {ns.items}"):
+        return
+    result = tick_checkboxes(_get_client(), ns.card_id, ns.items)
+    output(result, fmt=ns.format)
+
+
+def cmd_tick_all(ns):
+    from codecks_cli._operations import tick_all_checkboxes
+
+    if _dry_run_guard("tick all checkboxes", f"card {ns.card_id}"):
+        return
+    result = tick_all_checkboxes(_get_client(), ns.card_id)
+    output(result, fmt=ns.format)
+
+
+# ---------------------------------------------------------------------------
+# Overview command
+# ---------------------------------------------------------------------------
+
+
+def cmd_overview(ns):
+    from codecks_cli._operations import quick_overview
+
+    result = quick_overview(_get_client(), project=getattr(ns, "project", None))
+    output(result, fmt=ns.format)
+
+
+# ---------------------------------------------------------------------------
+# Partition command
+# ---------------------------------------------------------------------------
+
+
+def cmd_partition(ns):
+    from codecks_cli._operations import partition_cards
+
+    result = partition_cards(
+        _get_client(),
+        by=ns.by,
+        status=getattr(ns, "status", None),
+        project=getattr(ns, "project", None),
+    )
+    output(result, fmt=ns.format)
+
+
+# ---------------------------------------------------------------------------
+# Coordination commands
+# ---------------------------------------------------------------------------
+
+
+def cmd_claim(ns):
+    from codecks_cli._operations import claim_card
+
+    if _dry_run_guard("claim card", f"{ns.card_id} for agent {ns.agent}"):
+        return
+    result = claim_card(ns.card_id, ns.agent, reason=getattr(ns, "reason", None))
+    output(result, fmt=ns.format)
+
+
+def cmd_release(ns):
+    from codecks_cli._operations import release_card
+
+    if _dry_run_guard("release card", f"{ns.card_id} from agent {ns.agent}"):
+        return
+    result = release_card(ns.card_id, ns.agent, summary=getattr(ns, "summary", None))
+    output(result, fmt=ns.format)
+
+
+def cmd_team_status(ns):
+    from codecks_cli._operations import team_status_from_claims
+
+    result = team_status_from_claims()
+    output(result, fmt=ns.format)
+
+
+# ---------------------------------------------------------------------------
+# Feedback command
+# ---------------------------------------------------------------------------
+
+
+def cmd_feedback(ns):
+    from codecks_cli._operations import save_feedback
+
+    result = save_feedback(
+        ns.message,
+        category=ns.category,
+        tool_name=getattr(ns, "tool", None),
+        context=getattr(ns, "context", None),
+    )
+    output(result, fmt=ns.format)
+
+
+# ---------------------------------------------------------------------------
+# Agent-native CLI commands
+# ---------------------------------------------------------------------------
+
+
+def cmd_commands(ns):
+    """Output structured JSON of all commands for agent self-discovery."""
+    import json
+
+    from codecks_cli.cli import build_parser
+
+    parser = build_parser()
+    commands = []
+    for action in parser._subparsers._actions:
+        if not hasattr(action, "_parser_class"):
+            continue
+        for name, subparser in action.choices.items():
+            if name in ("version",):
+                continue
+            cmd_info = {"name": name, "description": subparser.description or "", "args": []}
+            for act in subparser._actions:
+                if act.option_strings:
+                    arg_info = {
+                        "name": act.option_strings[-1],
+                        "type": act.type.__name__ if act.type else "string",
+                        "required": act.required,
+                    }
+                    if len(act.option_strings) > 1:
+                        arg_info["short"] = act.option_strings[0]
+                    if act.choices:
+                        arg_info["choices"] = list(act.choices)
+                    if act.help:
+                        arg_info["description"] = act.help
+                    cmd_info["args"].append(arg_info)
+                elif act.dest not in ("help", "command", "show_help"):
+                    cmd_info["args"].append({
+                        "name": act.dest,
+                        "positional": True,
+                        "type": act.type.__name__ if act.type else "string",
+                        "required": act.nargs not in ("?", "*"),
+                    })
+            commands.append(cmd_info)
+
+    result = {"ok": True, "commands": commands, "count": len(commands)}
+    output(result, fmt=ns.format)
+
+
+def cmd_undo(ns):
+    """Revert the last mutation from undo snapshot."""
+    from codecks_cli._operations import undo_last_mutation
+
+    result = undo_last_mutation(_get_client())
     output(result, fmt=ns.format)

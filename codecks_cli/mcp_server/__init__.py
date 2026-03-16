@@ -59,6 +59,7 @@ for _mod in [_tools_read, _tools_write, _tools_comments, _tools_local, _tools_te
 # _core
 from codecks_cli.mcp_server._core import (  # noqa: E402, F401
     _CACHE_INVALIDATION_MAP,
+    _CLAIMS_PATH,
     _MUTATION_METHODS,
     MCP_RESPONSE_MODE,
     _agent_sessions,
@@ -77,8 +78,10 @@ from codecks_cli.mcp_server._core import (  # noqa: E402, F401
     _invalidate_cache_for,
     _is_cache_valid,
     _load_cache_from_disk,
+    _load_claims,
     _register_agent,
     _reset_sessions,
+    _save_claims,
     _slim_card,
     _slim_card_list,
     _slim_deck,

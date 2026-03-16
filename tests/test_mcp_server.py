@@ -1842,8 +1842,6 @@ class TestWarmCacheSkip:
         mock_client.list_cards.return_value = {"cards": []}
         mock_client.list_hand.return_value = []
         mock_client.list_decks.return_value = []
-        mock_client.pm_focus.return_value = {}
-        mock_client.standup.return_value = {}
         _core._client = mock_client
         _core._snapshot_cache = {
             "fetched_at": "2026-03-07T00:00:00Z",
