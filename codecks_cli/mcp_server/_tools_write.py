@@ -88,6 +88,7 @@ def update_cards(
     tags: str | None = None,
     doc: Literal["true", "false"] | None = None,
     continue_on_error: bool = False,
+    dry_run: bool = False,
 ) -> dict:
     """Update card properties. Doc cards: only owner/tags/milestone/deck/title/content/hero.
 
@@ -109,6 +110,7 @@ def update_cards(
         owner: Name, or 'none' to unassign.
         tags: Card-level masterTags (comma-separated, or 'none'). Prefer inline body tags.
         continue_on_error: If True, continue updating remaining cards after a failure.
+        dry_run: If True, validate and return what WOULD change without executing.
 
     Returns:
         Dict with ok, updated count, and per-card results.
@@ -144,6 +146,27 @@ def update_cards(
                                 )
                             )
 
+    if dry_run:
+        changes = {}
+        for k, v in {
+            "status": status, "priority": priority, "effort": effort,
+            "deck": deck, "title": title, "milestone": milestone,
+            "hero": hero, "owner": owner, "tags": tags, "doc": doc,
+        }.items():
+            if v is not None:
+                changes[k] = v
+        if content is not None:
+            changes["content"] = f"({len(content)} chars)"
+        return _finalize_tool_result({
+            "ok": True,
+            "dry_run": True,
+            "action": "update_cards",
+            "card_count": len(card_ids),
+            "card_ids": card_ids,
+            "changes": changes,
+            "message": f"Would update {len(card_ids)} card(s) with: {', '.join(changes.keys())}",
+        })
+
     return _finalize_tool_result(
         _call(
             "update_cards",
@@ -164,11 +187,12 @@ def update_cards(
     )
 
 
-def mark_done(card_ids: list[str]) -> dict:
+def mark_done(card_ids: list[str], dry_run: bool = False) -> dict:
     """Mark cards as done.
 
     Args:
         card_ids: Full 36-char UUIDs.
+        dry_run: If True, validate and return what WOULD change without executing.
 
     Returns:
         Dict with ok, count of marked cards.
@@ -177,14 +201,24 @@ def mark_done(card_ids: list[str]) -> dict:
         _validate_uuid_list(card_ids)
     except CliError as e:
         return _finalize_tool_result(_contract_error(str(e), "error"))
+    if dry_run:
+        return _finalize_tool_result({
+            "ok": True,
+            "dry_run": True,
+            "action": "mark_done",
+            "card_count": len(card_ids),
+            "card_ids": card_ids,
+            "message": f"Would mark {len(card_ids)} card(s) as done",
+        })
     return _finalize_tool_result(_call("mark_done", card_ids=card_ids))
 
 
-def mark_started(card_ids: list[str]) -> dict:
+def mark_started(card_ids: list[str], dry_run: bool = False) -> dict:
     """Mark cards as started.
 
     Args:
         card_ids: Full 36-char UUIDs.
+        dry_run: If True, validate and return what WOULD change without executing.
 
     Returns:
         Dict with ok, count of marked cards.
@@ -193,6 +227,15 @@ def mark_started(card_ids: list[str]) -> dict:
         _validate_uuid_list(card_ids)
     except CliError as e:
         return _finalize_tool_result(_contract_error(str(e), "error"))
+    if dry_run:
+        return _finalize_tool_result({
+            "ok": True,
+            "dry_run": True,
+            "action": "mark_started",
+            "card_count": len(card_ids),
+            "card_ids": card_ids,
+            "message": f"Would mark {len(card_ids)} card(s) as started",
+        })
     return _finalize_tool_result(_call("mark_started", card_ids=card_ids))
 
 

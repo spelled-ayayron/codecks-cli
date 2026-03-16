@@ -2635,3 +2635,62 @@ class TestSnapshotInCall:
 
         _core._call("create_card", title="Test")
         assert len(snapshot_calls) == 0
+
+
+class TestDryRun:
+    """Tests for dry_run parameter on mutation tools."""
+
+    def test_update_cards_dry_run(self):
+        """update_cards with dry_run returns preview without calling API."""
+        result = mcp_mod.update_cards(
+            card_ids=[_C1, _C2], status="done", priority="a", dry_run=True
+        )
+        assert result["ok"] is True
+        assert result["dry_run"] is True
+        assert result["action"] == "update_cards"
+        assert result["card_count"] == 2
+        assert result["card_ids"] == [_C1, _C2]
+        assert "status" in result["changes"]
+        assert "priority" in result["changes"]
+        assert "Would update 2 card(s)" in result["message"]
+
+    def test_update_cards_dry_run_no_api_call(self, monkeypatch):
+        """update_cards dry_run must NOT call _call() or the client."""
+        call_count = []
+        original_call = _core._call
+        def tracking_call(*args, **kwargs):
+            call_count.append(1)
+            return original_call(*args, **kwargs)
+        monkeypatch.setattr(_core, "_call", tracking_call)
+
+        mcp_mod.update_cards(card_ids=[_C1], status="started", dry_run=True)
+        assert len(call_count) == 0
+
+    def test_mark_done_dry_run(self):
+        """mark_done with dry_run returns preview."""
+        result = mcp_mod.mark_done(card_ids=[_C1], dry_run=True)
+        assert result["ok"] is True
+        assert result["dry_run"] is True
+        assert result["action"] == "mark_done"
+        assert "Would mark 1 card(s) as done" in result["message"]
+
+    def test_mark_started_dry_run(self):
+        """mark_started with dry_run returns preview."""
+        result = mcp_mod.mark_started(card_ids=[_C1, _C2], dry_run=True)
+        assert result["ok"] is True
+        assert result["dry_run"] is True
+        assert result["action"] == "mark_started"
+        assert result["card_count"] == 2
+
+    def test_update_cards_dry_run_still_validates(self):
+        """dry_run should still validate UUIDs."""
+        result = mcp_mod.update_cards(card_ids=[_BAD], status="done", dry_run=True)
+        assert result["ok"] is False
+
+    def test_update_cards_dry_run_content_summarized(self):
+        """dry_run should show content length, not full content."""
+        result = mcp_mod.update_cards(
+            card_ids=[_C1], content="x" * 5000, dry_run=True
+        )
+        assert result["ok"] is True
+        assert "(5000 chars)" in result["changes"]["content"]
