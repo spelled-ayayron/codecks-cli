@@ -13,6 +13,25 @@ class TestSetupDiscoverProjects:
         setup_wizard._setup_discover_projects()
         mock_save.assert_called_once_with("CODECKS_PROJECTS", "")
 
+    @patch("codecks_cli.setup_wizard._get_archived_project_ids")
+    @patch("codecks_cli.setup_wizard.config.save_env_value")
+    @patch("codecks_cli.setup_wizard._try_call")
+    @patch("builtins.input", return_value="My Game")
+    def test_archived_projects_excluded_from_discovery(
+        self, mock_input, mock_try_call, mock_save, mock_archived
+    ):
+        mock_try_call.return_value = {
+            "deck": {
+                "dk1": {"id": "d1", "title": "Features", "projectId": "active-p"},
+                "dk2": {"id": "d2", "title": "OldDeck", "projectId": "archived-p"},
+            }
+        }
+        mock_archived.return_value = {"archived-p"}
+        setup_wizard._setup_discover_projects()
+        saved_value = mock_save.call_args[0][1]
+        assert "archived-p" not in saved_value
+        assert "active-p" in saved_value
+
 
 class TestSetupDiscoverUser:
     @patch("codecks_cli.setup_wizard.config.save_env_value")

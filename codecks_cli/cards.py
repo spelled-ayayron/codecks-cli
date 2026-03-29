@@ -76,12 +76,39 @@ def get_account():
     return query(q)
 
 
+def _get_archived_project_ids():
+    """Return a set of project IDs that are archived (cached per invocation)."""
+    if "archived_project_ids" in config._cache:
+        return config._cache["archived_project_ids"]
+    result = _try_call(
+        query, {"_root": [{"account": [{"archivedProjects": ["id"]}]}]}
+    )
+    ids: set[str] = set()
+    if result:
+        for _key, proj in result.get("project", {}).items():
+            pid = proj.get("id")
+            if pid:
+                ids.add(pid)
+    config._cache["archived_project_ids"] = ids
+    return ids
+
+
 def list_decks():
     if "decks" in config._cache:
         return config._cache["decks"]
-    q = {"_root": [{"account": [{"decks": ["title", "id", "projectId"]}]}]}
+    q = {"_root": [{"account": [{"decks": ["title", "id", "projectId", "isDeleted"]}]}]}
     result = query(q)
     warn_if_empty(result, "deck")
+
+    # Filter out deleted decks and decks belonging to archived projects
+    archived_pids = _get_archived_project_ids()
+    result["deck"] = {
+        k: v
+        for k, v in result.get("deck", {}).items()
+        if not v.get("isDeleted")
+        and _get_field(v, "project_id", "projectId") not in archived_pids
+    }
+
     config._cache["decks"] = result
     return result
 
